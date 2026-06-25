@@ -1,0 +1,328 @@
+<%
+const isCover = photo.cover_photo_id !== null && photo.id === photo.cover_photo_id;
+const breadcrumbs = [
+  { label: 'Cameras', url: '/cameras' },
+  { label: photo.camera_name, url: `/camera/${photo.camera_id}` },
+  { label: rollLeaf(photo.rel_path), url: `/roll/${photo.roll_id}` },
+  { label: photo.filename, url: '' },
+];
+%>
+<%- include('partials/header', { title: photo.filename, page, breadcrumbs, favs: false }) %>
+
+<div class="photo-page">
+
+  <div class="photo-nav">
+    <div class="photo-nav-left">
+      <% if (prevId) { %>
+      <a class="nav-arrow" href="/photo/<%= prevId %>">← prev</a>
+      <% } %>
+    </div>
+    <span class="photo-pos"><%= photoNum %> / <%= total %></span>
+    <div class="photo-nav-right">
+      <% if (nextId) { %>
+      <a class="nav-arrow" href="/photo/<%= nextId %>">next →</a>
+      <% } %>
+    </div>
+  </div>
+
+  <div class="photo-viewer">
+    <% if (photo.hidden) { %>
+    <div class="photo-blur-wrap" id="photo-blur-wrap">
+      <img src="/full/<%= photo.id %>" alt="<%= photo.filename %>" class="photo-img photo-img--blurred" id="blurred-img">
+      <div class="blur-overlay" id="blur-overlay">
+        <span class="blur-icon">&#128274;</span>
+        <span class="blur-label">Hidden photo</span>
+        <button class="btn-reveal" id="reveal-btn">Hold to reveal</button>
+      </div>
+    </div>
+    <% } else { %>
+    <a href="/full/<%= photo.id %>" target="_blank" title="Open full size">
+      <img src="/full/<%= photo.id %>" alt="<%= photo.filename %>" class="photo-img">
+    </a>
+    <% } %>
+  </div>
+
+  <div class="photo-sidebar">
+
+    <div class="photo-meta">
+      <div class="meta-item">
+        <span class="meta-key">Camera</span>
+        <a href="/camera/<%= photo.camera_id %>"><%= photo.camera_name %></a>
+      </div>
+      <% if (photo.film_stock) { %>
+      <div class="meta-item"><span class="meta-key">Film</span> <%= photo.film_stock %></div>
+      <% } %>
+      <% if (photo.date_label) { %>
+      <div class="meta-item"><span class="meta-key">Date</span> <%= photo.date_label %></div>
+      <% } %>
+      <% if (photo.year) { %>
+      <div class="meta-item"><span class="meta-key">Year</span> <%= photo.year %></div>
+      <% } %>
+      <div class="meta-item">
+        <span class="meta-key">File</span>
+        <span class="meta-filename"><%= photo.filename %></span>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <button class="fav-btn <%= photo.favorite ? 'fav-btn--on' : '' %>" id="fav-btn" onclick="toggleFav()">
+        <%= photo.favorite ? '♥ Favorited' : '♡ Add to favorites' %>
+      </button>
+    </div>
+
+    <div class="sidebar-section">
+      <button class="cover-btn <%= isCover ? 'cover-btn--on' : '' %>" id="cover-btn" onclick="toggleCover()">
+        <%- isCover ? '&#9733; Roll cover' : '&#9734; Set as roll cover' %>
+      </button>
+    </div>
+
+    <div class="sidebar-section">
+      <h3>Tags</h3>
+      <div class="tags-display" id="tags-display">
+        <% if (tags.length) { %>
+          <% for (const t of tags) { %><span class="tag"><%= t %></span><% } %>
+        <% } else { %>
+          <span class="no-tags">No tags</span>
+        <% } %>
+      </div>
+      <input type="text" id="tags-input" class="tags-input" placeholder="tag1, tag2, …" value="<%= tags.join(', ') %>">
+      <div class="edit-actions">
+        <button class="btn-primary btn-sm" onclick="saveTags()">Save tags</button>
+        <span class="save-status" id="tags-status"></span>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <h3>Notes</h3>
+      <textarea id="notes-input" rows="4" class="notes-textarea" placeholder="Add a note…"><%= photo.notes || '' %></textarea>
+      <div class="edit-actions">
+        <button class="btn-primary btn-sm" onclick="saveNotes()">Save notes</button>
+        <span class="save-status" id="notes-status"></span>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <button class="btn-folder" onclick="openFolder()">&#128193; Open in Explorer</button>
+    </div>
+
+    <% if (peopleInPhoto.length > 0) { %>
+    <div class="sidebar-section">
+      <h3>People in this photo</h3>
+      <div class="photo-people-list" id="photo-people-list">
+        <% for (const p of peopleInPhoto) { %>
+        <div class="photo-person" id="person-row-<%= p.id %>">
+          <a href="/person/<%= p.id %>" class="photo-person-face">
+            <% if (p.face_id) { %>
+            <img src="/immich-person-thumb/<%= p.face_id %>" alt="">
+            <% } else { %>
+            <div class="person-face--empty small">&#128100;</div>
+            <% } %>
+          </a>
+          <div class="photo-person-details">
+            <span class="photo-person-name" id="pname-<%= p.id %>"><%= p.name || 'Unknown' %></span>
+            <div class="person-autocomplete" id="pac-<%= p.id %>" style="display:none">
+              <input class="photo-person-input" id="pinput-<%= p.id %>"
+                     type="text" value="<%= p.name || '' %>" placeholder="Type a name…"
+                     autocomplete="off"
+                     oninput="onPersonInput('<%= p.id %>')"
+                     onkeydown="onPersonKey(event, '<%= p.id %>')">
+              <div class="person-dropdown" id="pdrop-<%= p.id %>"></div>
+            </div>
+          </div>
+          <button class="photo-person-edit" onclick="editPersonName('<%= p.id %>')" title="Name this person">&#9998;</button>
+        </div>
+        <% } %>
+      </div>
+    </div>
+    <% } %>
+
+    <div class="sidebar-section sidebar-section--danger">
+      <button class="hide-btn <%= photo.hidden ? 'hide-btn--on' : '' %>" id="hide-btn" onclick="toggleHide()">
+        <%- photo.hidden ? '&#128065; Unhide photo' : '&#128274; Hide photo' %>
+      </button>
+      <button class="btn-danger" onclick="deletePhoto()">&#128465; Delete permanently</button>
+    </div>
+
+    <div class="sidebar-section">
+      <a class="btn-ghost" href="/roll/<%= photo.roll_id %>">← Back to roll</a>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const PID = <%- photo.id %>;
+
+let _dropdownTimer = null;
+
+function editPersonName(id) {
+  document.getElementById('pname-' + id).style.display = 'none';
+  const pac = document.getElementById('pac-' + id);
+  pac.style.display = '';
+  const input = document.getElementById('pinput-' + id);
+  input.focus();
+  input.select();
+}
+
+async function onPersonInput(id) {
+  const q = document.getElementById('pinput-' + id).value.trim();
+  clearTimeout(_dropdownTimer);
+  if (!q) { closeDropdown(id); return; }
+  _dropdownTimer = setTimeout(() => fetchSuggestions(id, q), 150);
+}
+
+async function fetchSuggestions(id, q) {
+  const r    = await fetch(`/api/persons/search?q=${encodeURIComponent(q)}`);
+  const list = await r.json();
+  const drop = document.getElementById('pdrop-' + id);
+
+  // Filter out this person themselves
+  const others = list.filter(p => p.id !== id);
+  if (!others.length) { drop.innerHTML = ''; drop.style.display = 'none'; return; }
+
+  drop.innerHTML = others.map(p => `
+    <div class="pdrop-item" onmousedown="selectPerson('${id}', '${p.id}', '${(p.name||'').replace(/'/g,"\\'")}')">
+      <div class="pdrop-face">
+        ${p.cover_face_id
+          ? `<img src="/immich-person-thumb/${p.cover_face_id}" alt="">`
+          : '<span>&#128100;</span>'}
+      </div>
+      <span class="pdrop-name">${p.name}</span>
+      <span class="pdrop-merge">merge →</span>
+    </div>
+  `).join('');
+  drop.style.display = 'block';
+}
+
+function closeDropdown(id) {
+  const drop = document.getElementById('pdrop-' + id);
+  if (drop) { drop.style.display = 'none'; drop.innerHTML = ''; }
+}
+
+async function selectPerson(fromId, intoId, name) {
+  // Merge fromId into intoId
+  await fetch('/api/persons/merge', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ into: intoId, from: fromId }),
+  });
+  const nameEl = document.getElementById('pname-' + fromId);
+  nameEl.textContent = name;
+  nameEl.style.display = '';
+  nameEl.href = `/person/${intoId}`;
+  document.getElementById('pac-' + fromId).style.display = 'none';
+  closeDropdown(fromId);
+  // Update the face link
+  const faceLink = document.querySelector(`#person-row-${fromId} .photo-person-face`);
+  if (faceLink) faceLink.href = `/person/${intoId}`;
+}
+
+function onPersonKey(e, id) {
+  if (e.key === 'Enter') {
+    closeDropdown(id);
+    savePersonName(id);
+  } else if (e.key === 'Escape') {
+    closeDropdown(id);
+    cancelPersonEdit(id);
+  }
+}
+
+function cancelPersonEdit(id) {
+  document.getElementById('pname-' + id).style.display = '';
+  document.getElementById('pac-' + id).style.display = 'none';
+}
+
+async function savePersonName(id) {
+  const input = document.getElementById('pinput-' + id);
+  const name  = input.value.trim();
+  await fetch(`/api/person/${id}/name`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  const nameEl = document.getElementById('pname-' + id);
+  nameEl.textContent = name || 'Unknown';
+  nameEl.style.display = '';
+  document.getElementById('pac-' + id).style.display = 'none';
+}
+
+async function toggleCover() {
+  const btn = document.getElementById('cover-btn');
+  const isNowCover = btn.classList.contains('cover-btn--on');
+  const newPhotoId = isNowCover ? null : PID;
+  await fetch(`/api/roll/<%- photo.roll_id %>/cover`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ photo_id: newPhotoId }),
+  });
+  btn.classList.toggle('cover-btn--on', !isNowCover);
+  btn.textContent = !isNowCover ? '★ Roll cover' : '☆ Set as roll cover';
+}
+
+async function toggleFav() {
+  const res = await fetch(`/api/photo/${PID}/favorite`, { method:'POST' });
+  const d = await res.json();
+  const btn = document.getElementById('fav-btn');
+  btn.textContent = d.favorite ? '♥ Favorited' : '♡ Add to favorites';
+  btn.classList.toggle('fav-btn--on', d.favorite);
+}
+
+async function saveTags() {
+  const tags = document.getElementById('tags-input').value.split(',').map(t => t.trim()).filter(Boolean);
+  await fetch(`/api/photo/${PID}/tags`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({tags}) });
+  const el = document.getElementById('tags-display');
+  el.innerHTML = tags.length ? tags.map(t => `<span class="tag">${t}</span>`).join('') : '<span class="no-tags">No tags</span>';
+  flash('tags-status', 'Saved ✓');
+}
+
+async function saveNotes() {
+  const notes = document.getElementById('notes-input').value.trim();
+  await fetch(`/api/photo/${PID}/notes`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({notes}) });
+  flash('notes-status', 'Saved ✓');
+}
+
+function flash(id, msg) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  setTimeout(() => el.textContent = '', 2000);
+}
+
+// Hold-to-reveal for hidden photos
+const revealBtn = document.getElementById('reveal-btn');
+if (revealBtn) {
+  const img = document.getElementById('blurred-img');
+  const overlay = document.getElementById('blur-overlay');
+  const show = () => { img.classList.remove('photo-img--blurred'); overlay.style.display = 'none'; };
+  const hide = () => { img.classList.add('photo-img--blurred'); overlay.style.display = ''; };
+  revealBtn.addEventListener('mousedown',   show);
+  revealBtn.addEventListener('touchstart',  show, { passive: true });
+  revealBtn.addEventListener('mouseup',     hide);
+  revealBtn.addEventListener('touchend',    hide);
+  revealBtn.addEventListener('mouseleave',  hide);
+  revealBtn.addEventListener('contextmenu', e => e.preventDefault());
+}
+
+async function openFolder() {
+  await fetch(`/open-folder/${PID}`);
+}
+
+async function toggleHide() {
+  const r = await fetch(`/api/photo/${PID}/hidden`, { method: 'POST' });
+  const d = await r.json();
+  const btn = document.getElementById('hide-btn');
+  btn.textContent = d.hidden ? '👁 Unhide photo' : '🔒 Hide photo';
+  btn.classList.toggle('hide-btn--on', d.hidden);
+}
+
+async function deletePhoto() {
+  if (!confirm('Permanently delete this file from disk?\n\nThis cannot be undone.')) return;
+  const r = await fetch(`/api/photo/${PID}`, { method: 'DELETE' });
+  const d = await r.json();
+  if (d.ok) window.location.href = `/roll/${d.rollId}`;
+}
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  <% if (prevId) { %>if (e.key === 'ArrowLeft') location.href = '/photo/<%= prevId %>';<% } %>
+  <% if (nextId) { %>if (e.key === 'ArrowRight') location.href = '/photo/<%= nextId %>';<% } %>
+});
+</script>
+
+<%- include('partials/footer') %>

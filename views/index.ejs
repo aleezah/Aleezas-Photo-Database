@@ -1,0 +1,133 @@
+<%- include('partials/header', { title: 'Overview', page, breadcrumbs: [], favs: false }) %>
+
+<div class="page-header">
+  <h1>Photo Archive</h1>
+  <p class="subtitle">Aleeza's photo collection</p>
+</div>
+
+<div class="stats-row">
+  <a class="stat-card" href="/rolls">
+    <div class="stat-num"><%= fmt(stats.filmPhotos) %></div>
+    <div class="stat-label">Film photos</div>
+  </a>
+  <a class="stat-card" href="/rolls">
+    <div class="stat-num"><%= stats.filmRolls %></div>
+    <div class="stat-label">Film rolls</div>
+  </a>
+  <a class="stat-card" href="/digital">
+    <div class="stat-num"><%= fmt(stats.digitalPhotos) %></div>
+    <div class="stat-label">Digital photos</div>
+  </a>
+  <a class="stat-card" href="/digital">
+    <div class="stat-num"><%= stats.digitalAlbums %></div>
+    <div class="stat-label">Digital albums</div>
+  </a>
+  <a class="stat-card" href="/search?favs=1">
+    <div class="stat-num"><%= stats.totalFavorites %></div>
+    <div class="stat-label">Favorites</div>
+  </a>
+</div>
+
+<div class="dashboard-grid">
+
+  <section class="card">
+    <h2>Photos by year</h2>
+    <div class="bar-chart">
+      <% for (const row of photosByYear) { %>
+      <div class="bar-row">
+        <span class="bar-label"><%= row.year %></span>
+        <div class="bar-track">
+          <div class="bar-fill" style="width: <%= Math.round(row.count / maxYear * 100) %>%"></div>
+        </div>
+        <span class="bar-count"><%= row.count %></span>
+      </div>
+      <% } %>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Film stocks</h2>
+    <div class="tag-list">
+      <% for (const row of filmStocks) { %>
+      <a class="tag-chip" href="/search?film=<%= encodeURIComponent(row.film_stock) %>">
+        <%= row.film_stock %> <span class="chip-count"><%= row.count %></span>
+      </a>
+      <% } %>
+    </div>
+  </section>
+
+  <section class="card full-width">
+    <div class="section-header">
+      <h2>Recent film rolls</h2>
+      <a class="section-link" href="/rolls">View all →</a>
+    </div>
+    <div class="roll-grid">
+      <% for (const r of recentRolls) { %>
+      <a class="roll-card" href="/roll/<%= r.id %>">
+        <% if (r.preview_id) { %>
+        <div class="roll-thumb">
+          <img src="/thumb/<%= r.preview_id %>" alt="" loading="lazy">
+        </div>
+        <% } else { %>
+        <div class="roll-thumb roll-thumb--empty"></div>
+        <% } %>
+        <div class="roll-info">
+          <div class="roll-camera"><%= r.camera_name.replace(/^35mm prints \/ /, '') %></div>
+          <div class="roll-date"><%= r.date_label || rollLeaf(r.rel_path) %></div>
+          <% if (r.film_stock) { %><div class="roll-film"><%= r.film_stock %></div><% } %>
+          <div class="roll-count"><%= r.photo_count %> photos</div>
+        </div>
+      </a>
+      <% } %>
+    </div>
+  </section>
+
+  <section class="card full-width">
+    <div class="section-header">
+      <h2>Recent digital albums</h2>
+      <a class="section-link" href="/digital">View all →</a>
+    </div>
+    <div class="roll-grid">
+      <% for (const r of recentDigital) { %>
+      <a class="roll-card" href="/roll/<%= r.id %>">
+        <% if (r.preview_id) { %>
+        <div class="roll-thumb">
+          <img src="/thumb/<%= r.preview_id %>" alt="" loading="lazy">
+        </div>
+        <% } else { %>
+        <div class="roll-thumb roll-thumb--empty"></div>
+        <% } %>
+        <div class="roll-info">
+          <div class="roll-camera"><%= r.camera_name.replace(/^Digital \/ /, '') %></div>
+          <div class="roll-date"><%= r.date_label || rollLeaf(r.rel_path) %></div>
+          <div class="roll-count"><%= r.photo_count %> photos</div>
+        </div>
+      </a>
+      <% } %>
+    </div>
+  </section>
+
+  <section class="card full-width">
+    <h2>Top cameras</h2>
+    <div class="camera-grid small">
+      <% for (const cam of topCameras) { %>
+      <a class="camera-card" href="/camera/<%= cam.id %>">
+        <% if (cam.preview_id) { %>
+        <div class="camera-thumb">
+          <img src="/thumb/<%= cam.preview_id %>" alt="<%= cam.name %>" loading="lazy">
+        </div>
+        <% } else { %>
+        <div class="camera-thumb camera-thumb--empty"></div>
+        <% } %>
+        <div class="camera-info">
+          <div class="camera-name"><%= cam.name.replace(/^35mm prints \/ |^Digital \/ /, '') %></div>
+          <div class="camera-count"><%= fmt(cam.count) %> photos</div>
+        </div>
+      </a>
+      <% } %>
+    </div>
+  </section>
+
+</div>
+
+<%- include('partials/footer') %>

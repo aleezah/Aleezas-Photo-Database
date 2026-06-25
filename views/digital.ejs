@@ -1,0 +1,135 @@
+<%- include('partials/header', { title: 'Digital Photos', page, breadcrumbs: [], favs: false }) %>
+
+<div class="page-header">
+  <h1>Digital Photos</h1>
+  <p class="subtitle"><%= rolls.length %> albums</p>
+  <button class="btn-select-mode" id="select-toggle" onclick="toggleSelectMode()">Select</button>
+</div>
+
+<div class="bulk-bar" id="bulk-bar" style="display:none">
+  <span class="bulk-count" id="bulk-count">0 selected</span>
+  <button class="bulk-btn" onclick="bulkAction('hide')">&#128274; Hide all photos</button>
+  <button class="bulk-btn" onclick="bulkAction('unhide')">&#128065; Unhide all photos</button>
+  <button class="bulk-btn bulk-btn--delete" onclick="bulkAction('delete')">&#128465; Delete folders</button>
+  <button class="bulk-btn bulk-btn--cancel" onclick="toggleSelectMode()">Cancel</button>
+</div>
+
+<div class="filter-bar">
+  <% if (years.length > 1) { %>
+  <div class="filter-group">
+    <span class="filter-label">Year</span>
+    <div class="filter-pills">
+      <a class="year-btn <%= !filterYear ? 'active' : '' %>"
+         href="/digital<%= filterCamera ? '?camera='+filterCamera : '' %>">All</a>
+      <% for (const y of years) { %>
+      <a class="year-btn <%= filterYear === y ? 'active' : '' %>"
+         href="/digital?year=<%= y %><%= filterCamera ? '&camera='+filterCamera : '' %>"><%= y %></a>
+      <% } %>
+    </div>
+  </div>
+  <% } %>
+
+  <% if (cameras.length > 1) { %>
+  <div class="filter-group">
+    <span class="filter-label">Camera</span>
+    <div class="filter-pills">
+      <a class="year-btn <%= !filterCamera ? 'active' : '' %>"
+         href="/digital<%= filterYear ? '?year='+filterYear : '' %>">All</a>
+      <% for (const c of cameras) { %>
+      <a class="year-btn <%= filterCamera === String(c.id) ? 'active' : '' %>"
+         href="/digital?camera=<%= c.id %><%= filterYear ? '&year='+filterYear : '' %>"><%= c.name %></a>
+      <% } %>
+    </div>
+  </div>
+  <% } %>
+</div>
+
+<%
+const visible = rolls.filter(r =>
+  (!filterYear   || r.year === filterYear) &&
+  (!filterCamera || String(r.camera_id) === filterCamera)
+);
+%>
+
+<% if (!visible.length) { %>
+<p class="empty-state">No albums match the selected filters.</p>
+<% } %>
+
+<div class="roll-grid" id="roll-grid">
+  <% for (const r of visible) { %>
+  <div class="roll-card-wrap" data-id="<%= r.id %>">
+    <a class="roll-card" href="/roll/<%= r.id %>" onclick="return handleCardClick(event, this)">
+      <% if (r.preview_id) { %>
+      <div class="roll-thumb">
+        <img src="/thumb/<%= r.preview_id %>" alt="" loading="lazy">
+      </div>
+      <% } else { %>
+      <div class="roll-thumb roll-thumb--empty"></div>
+      <% } %>
+      <div class="roll-select-check">&#10003;</div>
+      <div class="roll-info">
+        <div class="roll-path"><%= rollLabel(r.rel_path) %></div>
+        <div class="roll-camera-tag"><%= r.camera_name.replace(/^Digital \/ /, '') %></div>
+        <div class="roll-count"><%= r.photo_count %> photos</div>
+        <% if (r.notes) { %>
+        <div class="roll-notes-preview"><%= r.notes.slice(0, 60) %><%= r.notes.length > 60 ? '…' : '' %></div>
+        <% } %>
+      </div>
+    </a>
+  </div>
+  <% } %>
+</div>
+
+<script>
+let selectMode = false;
+const selected = new Set();
+
+function toggleSelectMode() {
+  selectMode = !selectMode;
+  document.getElementById('select-toggle').textContent = selectMode ? 'Done' : 'Select';
+  document.getElementById('bulk-bar').style.display = selectMode ? '' : 'none';
+  document.getElementById('roll-grid').classList.toggle('select-mode', selectMode);
+  if (!selectMode) {
+    selected.clear();
+    document.querySelectorAll('.roll-card-wrap.selected').forEach(el => el.classList.remove('selected'));
+    updateCount();
+  }
+}
+
+function handleCardClick(e, a) {
+  if (!selectMode) return true;
+  e.preventDefault();
+  const wrap = a.closest('.roll-card-wrap');
+  const id = wrap.dataset.id;
+  if (selected.has(id)) { selected.delete(id); wrap.classList.remove('selected'); }
+  else { selected.add(id); wrap.classList.add('selected'); }
+  updateCount();
+  return false;
+}
+
+function updateCount() {
+  document.getElementById('bulk-count').textContent = selected.size + ' selected';
+}
+
+async function bulkAction(action) {
+  if (!selected.size) return;
+  if (action === 'delete') {
+    if (!confirm(`Permanently delete ${selected.size} folder(s) and all their photos from disk?\n\nThis cannot be undone.`)) return;
+  }
+  const r = await fetch('/api/rolls/bulk-action', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: [...selected], action }),
+  });
+  const d = await r.json();
+  if (d.ok) {
+    if (action === 'delete') {
+      selected.forEach(id => document.querySelector(`.roll-card-wrap[data-id="${id}"]`)?.remove());
+    }
+    selected.clear();
+    updateCount();
+    if (action !== 'delete') toggleSelectMode();
+  }
+}
+</script>
+
+<%- include('partials/footer') %>

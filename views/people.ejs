@@ -1,0 +1,112 @@
+<%- include('partials/header', { title: 'People', page, breadcrumbs: [], favs: false }) %>
+
+<div class="page-header">
+  <h1>People</h1>
+  <p class="subtitle"><%= personTotal %> people identified</p>
+</div>
+
+<% if (!persons.length) { %>
+<div class="people-empty">
+  <div class="people-empty-icon">&#128100;</div>
+  <h2>No faces found</h2>
+  <p>Make sure Immich has finished scanning your library.</p>
+</div>
+<% } else { %>
+
+<div class="people-toolbar">
+  <input class="people-search-input" type="text" id="people-search"
+         placeholder="Search by name…" oninput="filterPeople(this.value)">
+  <span class="people-count" id="people-count"><%= personTotal %> people</span>
+</div>
+
+<div class="people-grid" id="people-grid">
+  <% for (const p of persons) { %>
+  <div class="person-card-wrap" data-name="<%= (p.name || '').toLowerCase() %>" data-id="<%= p.id %>">
+    <a class="person-card <%= p.all_hidden ? 'person-card--hidden' : '' %>" href="/person/<%= p.id %>">
+      <div class="person-face">
+        <% if (p.cover_face_id) { %>
+        <img src="/immich-person-thumb/<%= p.cover_face_id %>" alt="" loading="lazy">
+        <% } else { %>
+        <div class="person-face--empty">&#128100;</div>
+        <% } %>
+        <% if (p.all_hidden) { %><div class="person-hidden-badge">&#128274;</div><% } %>
+      </div>
+      <div class="person-info">
+        <div class="person-name" id="pname-<%= p.id %>"><%= p.name || 'Unknown' %></div>
+      </div>
+    </a>
+    <div class="person-actions">
+      <button class="person-action-btn <%= p.all_hidden ? 'person-action-btn--on' : '' %>"
+              id="hide-btn-<%= p.id %>"
+              onclick="toggleHidePerson('<%= p.id %>', this)"
+              title="<%= p.all_hidden ? 'Unhide all photos' : 'Hide all photos' %>">
+        <%- p.all_hidden ? '&#128065;' : '&#128274;' %>
+      </button>
+      <button class="person-action-btn person-action-btn--remove"
+              onclick="removePersonOnly('<%= p.id %>', this)"
+              title="Remove from People page only">
+        &#10005;
+      </button>
+    </div>
+  </div>
+  <% } %>
+</div>
+
+<% } %>
+
+<script>
+// Build a local name list for autocomplete from already-loaded persons
+const ALL_PERSONS = [
+  <% for (const p of persons) { %>
+  <% if (p.name) { %>{ id: '<%= p.id %>', name: '<%= (p.name||'').replace(/'/g, "\\'") %>' },<% } %>
+  <% } %>
+];
+
+function filterPeople(q) {
+  const lower = q.toLowerCase().trim();
+  const cards = document.querySelectorAll('.person-card-wrap');
+  let visible = 0;
+  cards.forEach(c => {
+    const name = c.dataset.name || '';
+    const show = !lower || name.includes(lower);
+    c.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  document.getElementById('people-count').textContent = visible + ' people';
+}
+
+async function removePersonOnly(id, btn) {
+  if (!confirm('Remove from People page?\n\nTheir photos will stay visible.')) return;
+  await fetch(`/api/person/${id}/remove-only`, { method: 'POST' });
+  btn.closest('.person-card-wrap').remove();
+  const count = document.querySelectorAll('.person-card-wrap').length;
+  document.getElementById('people-count').textContent = count + ' people';
+}
+
+async function toggleHidePerson(id, btn) {
+  const isHidden = btn.classList.contains('person-action-btn--on');
+  const r = await fetch(`/api/person/${id}/hide`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hidden: !isHidden }),
+  });
+  const d = await r.json();
+  if (d.ok) {
+    btn.classList.toggle('person-action-btn--on', d.hidden);
+    btn.title = d.hidden ? 'Unhide all photos' : 'Hide all photos';
+    btn.innerHTML = d.hidden ? '&#128065;' : '&#128274;';
+    const card = btn.closest('.person-card-wrap').querySelector('.person-card');
+    card.classList.toggle('person-card--hidden', d.hidden);
+    let badge = btn.closest('.person-card-wrap').querySelector('.person-hidden-badge');
+    if (d.hidden && !badge) {
+      badge = document.createElement('div');
+      badge.className = 'person-hidden-badge';
+      badge.innerHTML = '&#128274;';
+      btn.closest('.person-card-wrap').querySelector('.person-face').appendChild(badge);
+    } else if (!d.hidden && badge) {
+      badge.remove();
+    }
+  }
+}
+</script>
+
+<%- include('partials/footer') %>

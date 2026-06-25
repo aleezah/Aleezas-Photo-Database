@@ -1,0 +1,175 @@
+<%- include('partials/header', { title: favs ? 'Favorites' : 'Search', page, breadcrumbs: [], favs }) %>
+
+<div class="page-header">
+  <h1><%= favs ? 'Favorites' : 'Search' %></h1>
+</div>
+
+<div class="search-tabs">
+  <button class="search-tab search-tab--active" id="tab-keyword" onclick="switchTab('keyword')">Keyword</button>
+  <button class="search-tab" id="tab-visual" onclick="switchTab('visual')">Visual Search</button>
+</div>
+
+<!-- Keyword search -->
+<div id="panel-keyword">
+  <form class="search-form" method="get">
+    <input class="search-input" type="text" name="q" value="<%= q %>" placeholder="Search notes, camera, film stock…">
+    <div class="filter-row">
+      <select name="camera">
+        <option value="">All cameras</option>
+        <% for (const c of allCameras) { %>
+        <option value="<%= c.id %>" <%= camera == c.id ? 'selected' : '' %>><%= c.name.replace(/^35mm prints \/ |^Digital \/ /,'') %></option>
+        <% } %>
+      </select>
+      <select name="film">
+        <option value="">All film stocks</option>
+        <% for (const s of allStocks) { %>
+        <option value="<%= s.film_stock %>" <%= film === s.film_stock ? 'selected' : '' %>><%= s.film_stock %></option>
+        <% } %>
+      </select>
+      <select name="year">
+        <option value="">All years</option>
+        <% for (const y of allYears) { %>
+        <option value="<%= y.year %>" <%= year === y.year ? 'selected' : '' %>><%= y.year %></option>
+        <% } %>
+      </select>
+      <select name="tag">
+        <option value="">All tags</option>
+        <% for (const t of allTags) { %>
+        <option value="<%= t.name %>" <%= tag === t.name ? 'selected' : '' %>><%= t.name %></option>
+        <% } %>
+      </select>
+      <label class="fav-check">
+        <input type="checkbox" name="favs" value="1" <%= favs ? 'checked' : '' %>> Favorites only
+      </label>
+      <button class="btn-primary" type="submit">Search</button>
+      <a class="btn-ghost" href="/search">Clear</a>
+    </div>
+  </form>
+
+  <% if (photos.length) { %>
+  <%
+    const totalPages = Math.ceil(totalCount / pageSize);
+    const qs = new URLSearchParams({ q, camera, film, year, tag, favs: favs||'' });
+    qs.delete('page');
+    const baseQs = qs.toString();
+  %>
+  <p class="result-count">
+    <%= totalCount.toLocaleString() %> photo<%= totalCount !== 1 ? 's' : '' %>
+    <% if (totalPages > 1) { %> — page <%= currentPage %> of <%= totalPages %><% } %>
+  </p>
+  <div class="photo-grid">
+    <% for (const p of photos) { %>
+    <a class="photo-thumb-wrap <%= p.favorite ? 'is-favorite' : '' %>" href="/photo/<%= p.id %>">
+      <img src="/thumb/<%= p.id %>" alt="<%= p.filename %>" loading="lazy">
+      <div class="thumb-overlay">
+        <span><%= p.camera_name.replace(/^35mm prints \/ |^Digital \/ /,'') %></span>
+        <% if (p.film_stock) { %><span><%= p.film_stock %></span><% } %>
+      </div>
+      <% if (p.favorite) { %><span class="fav-indicator">♥</span><% } %>
+    </a>
+    <% } %>
+  </div>
+  <% if (totalPages > 1) { %>
+  <div class="pagination">
+    <% if (currentPage > 1) { %>
+    <a class="page-btn" href="/search?<%= baseQs %>&page=<%= currentPage - 1 %>">← Prev</a>
+    <% } %>
+    <span class="page-info"><%= currentPage %> / <%= totalPages %></span>
+    <% if (currentPage < totalPages) { %>
+    <a class="page-btn" href="/search?<%= baseQs %>&page=<%= currentPage + 1 %>">Next →</a>
+    <% } %>
+  </div>
+  <% } %>
+  <% } else if (q || camera || film || year || tag || favs) { %>
+  <p class="no-results">No photos found.</p>
+  <% } %>
+</div>
+
+<!-- Visual search -->
+<div id="panel-visual" style="display:none">
+  <div class="visual-search-box">
+    <input class="search-input" type="text" id="visual-input"
+           placeholder="Describe what you're looking for… e.g. cat, red dress, beach, birthday cake">
+    <button class="btn-primary" onclick="runVisualSearch()">Search</button>
+  </div>
+  <div class="visual-tag-suggestions">
+    <span class="suggest-label">Try:</span>
+    <% const suggestions = ['cat','dog','dress','hijab','beach','snow','birthday','wedding','food','night','selfie','group photo','sunset','city']; %>
+    <% for (const s of suggestions) { %>
+    <button class="suggest-chip" onclick="quickSearch('<%= s %>')"><%= s %></button>
+    <% } %>
+  </div>
+  <div id="visual-status" class="visual-status" style="display:none">Searching…</div>
+  <div id="visual-results" class="photo-grid" style="margin-top:20px"></div>
+  <div id="visual-more" style="display:none;text-align:center;margin-top:16px">
+    <button class="btn-ghost" onclick="loadMoreVisual()">Load more</button>
+  </div>
+</div>
+
+<script>
+function switchTab(tab) {
+  document.getElementById('panel-keyword').style.display = tab === 'keyword' ? '' : 'none';
+  document.getElementById('panel-visual').style.display  = tab === 'visual'  ? '' : 'none';
+  document.getElementById('tab-keyword').classList.toggle('search-tab--active', tab === 'keyword');
+  document.getElementById('tab-visual').classList.toggle('search-tab--active',  tab === 'visual');
+}
+
+function quickSearch(q) {
+  document.getElementById('visual-input').value = q;
+  runVisualSearch();
+}
+
+let _visualPage = 1;
+let _visualQuery = '';
+
+async function runVisualSearch() {
+  _visualQuery = document.getElementById('visual-input').value.trim();
+  if (!_visualQuery) return;
+  _visualPage = 1;
+  document.getElementById('visual-results').innerHTML = '';
+  document.getElementById('visual-more').style.display = 'none';
+  await fetchVisualPage();
+}
+
+async function loadMoreVisual() {
+  _visualPage++;
+  await fetchVisualPage();
+}
+
+async function fetchVisualPage() {
+  const status = document.getElementById('visual-status');
+  status.style.display = '';
+  status.textContent = 'Searching…';
+  try {
+    const r = await fetch('/api/visual-search', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: _visualQuery, page: _visualPage }),
+    });
+    const data = await r.json();
+    const photos = Array.isArray(data) ? data : (data.photos || []);
+    const hasMore = data.hasMore || false;
+    status.style.display = 'none';
+    const grid = document.getElementById('visual-results');
+    if (!photos.length && _visualPage === 1) {
+      grid.innerHTML = '<p class="no-results">No matching photos found.</p>';
+      return;
+    }
+    grid.innerHTML += photos.map(p => `
+      <a class="photo-thumb-wrap${p.hidden ? ' is-hidden' : ''}${p.favorite ? ' is-favorite' : ''}"
+         href="/photo/${p.id}">
+        <img src="/thumb/${p.id}" alt="${p.filename}" loading="lazy">
+        ${p.favorite ? '<span class="fav-indicator">♥</span>' : ''}
+      </a>
+    `).join('');
+    document.getElementById('visual-more').style.display = hasMore ? '' : 'none';
+  } catch(e) {
+    document.getElementById('visual-status').textContent = 'Error: ' + e.message;
+  }
+}
+
+document.getElementById('visual-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') runVisualSearch();
+});
+</script>
+
+<%- include('partials/footer') %>

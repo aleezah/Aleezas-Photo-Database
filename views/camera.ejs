@@ -1,0 +1,48 @@
+<%
+const breadcrumbs = [
+  { label: 'Cameras', url: '/cameras' },
+  { label: camera.name, url: '' },
+];
+%>
+<%- include('partials/header', { title: camera.name, page, breadcrumbs, favs: false }) %>
+
+<div class="page-header">
+  <h1><%= camera.name %></h1>
+  <p class="subtitle"><%= rolls.length %> rolls</p>
+</div>
+
+<% if (years.length > 1) { %>
+<div class="year-filter">
+  <span class="filter-label">Year:</span>
+  <a class="year-btn <%= !filterYear ? 'active' : '' %>" href="/camera/<%= camera.id %>">All</a>
+  <% for (const y of years) { %>
+  <a class="year-btn <%= filterYear === y ? 'active' : '' %>" href="/camera/<%= camera.id %>?year=<%= y %>"><%= y %></a>
+  <% } %>
+</div>
+<% } %>
+
+<div class="roll-grid">
+  <% for (const r of rolls) { %>
+  <% if (!filterYear || r.year === filterYear) { %>
+  <a class="roll-card" href="/roll/<%= r.id %>">
+    <% if (r.preview_id) { %>
+    <div class="roll-thumb">
+      <img src="/thumb/<%= r.preview_id %>" alt="" loading="lazy">
+    </div>
+    <% } else { %>
+    <div class="roll-thumb roll-thumb--empty"></div>
+    <% } %>
+    <div class="roll-info">
+      <div class="roll-path"><%= rollLabel(r.rel_path) %></div>
+      <% if (r.film_stock) { %><div class="roll-film"><%= r.film_stock %></div><% } %>
+      <div class="roll-count"><%= r.photo_count %> photos</div>
+      <% if (r.notes) { %>
+      <div class="roll-notes-preview"><%= r.notes.slice(0, 60) %><%= r.notes.length > 60 ? '…' : '' %></div>
+      <% } %>
+    </div>
+  </a>
+  <% } %>
+  <% } %>
+</div>
+
+<%- include('partials/footer') %>

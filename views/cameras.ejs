@@ -1,0 +1,54 @@
+<%
+// Split cameras into categories by prefix
+const allCams    = cameras;
+const filmCams   = cameras.filter(c => c.name.startsWith('35mm prints / '));
+const digitalCams = cameras.filter(c => c.name.startsWith('Digital / '));
+const otherCams  = cameras.filter(c => !c.name.startsWith('35mm prints / ') && !c.name.startsWith('Digital / '));
+
+const tabCams = tab === '35mm' ? filmCams : tab === 'digital' ? digitalCams : allCams;
+
+function displayName(name, currentTab) {
+  if (currentTab === '35mm')    return name.replace(/^35mm prints \/ /, '');
+  if (currentTab === 'digital') return name.replace(/^Digital \/ /, '');
+  return name;
+}
+%>
+<%- include('partials/header', { title: 'Cameras', page, breadcrumbs: [], favs: false }) %>
+
+<div class="page-header">
+  <h1>Cameras</h1>
+  <p class="subtitle"><%= tabCams.length %> cameras</p>
+</div>
+
+<div class="tab-bar">
+  <a class="tab-btn <%= tab === 'all' ? 'tab-btn--active' : '' %>" href="/cameras">All <span class="tab-count"><%= allCams.length %></span></a>
+  <% if (filmCams.length) { %>
+  <a class="tab-btn <%= tab === '35mm' ? 'tab-btn--active' : '' %>" href="/cameras?tab=35mm">35mm <span class="tab-count"><%= filmCams.length %></span></a>
+  <% } %>
+  <% if (digitalCams.length) { %>
+  <a class="tab-btn <%= tab === 'digital' ? 'tab-btn--active' : '' %>" href="/cameras?tab=digital">Digital <span class="tab-count"><%= digitalCams.length %></span></a>
+  <% } %>
+  <% if (otherCams.length) { %>
+  <a class="tab-btn <%= tab === 'other' ? 'tab-btn--active' : '' %>" href="/cameras?tab=other">Other <span class="tab-count"><%= otherCams.length %></span></a>
+  <% } %>
+</div>
+
+<div class="camera-grid">
+  <% for (const cam of tabCams) { %>
+  <a class="camera-card" href="/camera/<%= cam.id %>">
+    <% if (cam.preview_id) { %>
+    <div class="camera-thumb">
+      <img src="/thumb/<%= cam.preview_id %>" alt="<%= cam.name %>" loading="lazy">
+    </div>
+    <% } else { %>
+    <div class="camera-thumb camera-thumb--empty"></div>
+    <% } %>
+    <div class="camera-info">
+      <div class="camera-name"><%= displayName(cam.name, tab) %></div>
+      <div class="camera-meta"><%= fmt(cam.photo_count) %> photos · <%= cam.roll_count %> rolls</div>
+    </div>
+  </a>
+  <% } %>
+</div>
+
+<%- include('partials/footer') %>

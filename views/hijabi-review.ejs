@@ -1,0 +1,144 @@
+<%
+const breadcrumbs = [
+  { label: 'People', url: '/people' },
+  { label: person.name || 'Unknown', url: `/person/${person.id}` },
+  { label: 'Hijabi review', url: '' },
+];
+%>
+<%- include('partials/header', { title: 'Hijabi review — ' + (person.name || 'Unknown'), page, breadcrumbs, favs: false }) %>
+
+<div class="review-header">
+  <div class="review-header-info">
+    <h1>&#129495; Hijabi review</h1>
+    <p class="subtitle">
+      For <strong><%= person.name || 'Unknown' %></strong> —
+      AI is sorting photos now. Move any that are wrong, then click <strong>Hide hair-visible photos</strong>.
+    </p>
+    <div class="review-progress" id="progress-wrap">
+      <div class="review-progress-bar" id="progress-bar" style="width:0%"></div>
+      <span class="review-progress-label" id="progress-label">Analysing 0 / <%= allPhotos.length %>…</span>
+    </div>
+  </div>
+  <div class="review-actions">
+    <button class="btn-primary" onclick="applyReview()">
+      Hide hair-visible photos (<span id="hide-count">0</span>)
+    </button>
+    <a class="btn-ghost" href="/person/<%= person.id %>">Cancel</a>
+  </div>
+</div>
+
+<div class="review-columns">
+
+  <div class="review-col" id="col-hair" ondragover="event.preventDefault()" ondrop="onDrop(event,'hair')">
+    <div class="review-col-header review-col-header--hide">
+      <span>&#128274; Hair visible — will be hidden</span>
+      <span class="review-col-count" id="count-hair">0</span>
+    </div>
+    <div class="review-grid" id="grid-hair"></div>
+  </div>
+
+  <div class="review-col" id="col-hijab" ondragover="event.preventDefault()" ondrop="onDrop(event,'hijab')">
+    <div class="review-col-header review-col-header--keep">
+      <span>&#10003; Wearing hijab — will stay visible</span>
+      <span class="review-col-count" id="count-hijab">0</span>
+    </div>
+    <div class="review-grid" id="grid-hijab"></div>
+  </div>
+
+</div>
+
+<!-- Hidden pool of all thumbnails, moved into columns as results arrive -->
+<div id="photo-pool" style="display:none">
+  <% for (const p of allPhotos) { %>
+  <div class="review-thumb review-thumb--pending" id="rthumb-<%= p.id %>"
+       data-id="<%= p.id %>" data-group="hair"
+       draggable="true" ondragstart="onDragStart(event)" onclick="movePhoto(this)">
+    <img src="/thumb/<%= p.id %>" alt="<%= p.filename %>" loading="lazy">
+    <div class="review-thumb-spinner"></div>
+    <div class="review-thumb-overlay">click to move</div>
+  </div>
+  <% } %>
+</div>
+
+<script>
+const PERSON_ID = '<%- person.id %>';
+const TOTAL = <%= allPhotos.length %>;
+
+// Stream results from server
+const es = new EventSource(`/person/${PERSON_ID}/hijabi-stream`);
+es.onmessage = e => {
+  const msg = JSON.parse(e.data);
+  if (msg.total !== undefined && !msg.id) return; // initial total message
+
+  if (msg.id) {
+    const thumb = document.getElementById('rthumb-' + msg.id);
+    if (!thumb) return;
+    thumb.classList.remove('review-thumb--pending');
+    // uncertain photos go to hair (safer)
+    const group = msg.result === 'hijab' ? 'hijab' : 'hair';
+    thumb.dataset.group = group;
+    document.getElementById('grid-' + group).appendChild(thumb);
+    updateCounts();
+
+    const done = msg.done || 0;
+    const pct = Math.round(done / TOTAL * 100);
+    document.getElementById('progress-bar').style.width = pct + '%';
+    document.getElementById('progress-label').textContent =
+      done < TOTAL ? `Analysing ${done} / ${TOTAL}…` : `Done — ${TOTAL} photos sorted`;
+  }
+
+  if (msg.finished) {
+    es.close();
+    document.getElementById('progress-wrap').classList.add('review-progress--done');
+  }
+};
+es.onerror = () => {
+  // Move any still-pending photos to hair pile
+  document.querySelectorAll('.review-thumb--pending').forEach(el => {
+    el.classList.remove('review-thumb--pending');
+    el.dataset.group = 'hair';
+    document.getElementById('grid-hair').appendChild(el);
+  });
+  updateCounts();
+  es.close();
+};
+
+function movePhoto(el) {
+  const toGroup = el.dataset.group === 'hair' ? 'hijab' : 'hair';
+  el.dataset.group = toGroup;
+  document.getElementById('grid-' + toGroup).appendChild(el);
+  updateCounts();
+}
+
+let _dragging = null;
+function onDragStart(e) { _dragging = e.currentTarget; }
+function onDrop(e, group) {
+  if (!_dragging) return;
+  _dragging.dataset.group = group;
+  document.getElementById('grid-' + group).appendChild(_dragging);
+  _dragging = null;
+  updateCounts();
+}
+
+function updateCounts() {
+  const hairCount  = document.querySelectorAll('#grid-hair  .review-thumb').length;
+  const hijabCount = document.querySelectorAll('#grid-hijab .review-thumb').length;
+  document.getElementById('count-hair').textContent  = hairCount;
+  document.getElementById('count-hijab').textContent = hijabCount;
+  document.getElementById('hide-count').textContent  = hairCount;
+}
+
+async function applyReview() {
+  const hideIds = [...document.querySelectorAll('#grid-hair .review-thumb')].map(el => +el.dataset.id);
+  if (!hideIds.length) { alert('No photos marked for hiding.'); return; }
+  es.close();
+  const r = await fetch(`/api/person/${PERSON_ID}/hijabi-apply`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hideIds }),
+  });
+  const d = await r.json();
+  if (d.ok) window.location.href = `/person/${PERSON_ID}`;
+}
+</script>
+
+<%- include('partials/footer') %>

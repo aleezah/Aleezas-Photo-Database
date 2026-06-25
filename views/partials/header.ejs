@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title><%= title %> — Photo Archive</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <nav class="nav">
+    <a class="nav-logo" href="/">Archive</a>
+    <div class="nav-links">
+      <a href="/" class="<%= page === 'index' ? 'active' : '' %>">Overview</a>
+      <a href="/cameras" class="<%= ['cameras','camera'].includes(page) ? 'active' : '' %>">Cameras</a>
+      <a href="/rolls" class="<%= page === 'rolls' ? 'active' : '' %>">Film Rolls</a>
+      <a href="/digital" class="<%= page === 'digital' ? 'active' : '' %>">Digital</a>
+      <a href="/people" class="<%= page === 'people' ? 'active' : '' %>">People</a>
+      <a href="/search" class="<%= page === 'search' && !favs ? 'active' : '' %>">Search</a>
+      <a href="/search?favs=1" class="<%= page === 'search' && favs ? 'active' : '' %>">Favorites</a>
+    </div>
+    <button class="hidden-toggle <%= showHidden ? 'hidden-toggle--on' : '' %>"
+            id="hidden-toggle-btn"
+            onclick="toggleHiddenView()"
+            title="<%= showHidden ? 'Click to hide private photos' : 'Click to reveal hidden photos' %>">
+      <%- showHidden ? '&#128065; Showing hidden' : '&#128274; Private' %>
+    </button>
+  </nav>
+  <main class="main">
+    <% if (typeof breadcrumbs !== 'undefined' && breadcrumbs && breadcrumbs.length) { %>
+    <nav class="breadcrumb">
+      <% for (let i = 0; i < breadcrumbs.length; i++) { %>
+        <% if (i < breadcrumbs.length - 1) { %>
+          <a href="<%= breadcrumbs[i].url %>"><%= breadcrumbs[i].label %></a>
+          <span class="sep">›</span>
+        <% } else { %>
+          <span><%= breadcrumbs[i].label %></span>
+        <% } %>
+      <% } %>
+    </nav>
+    <% } %>
+  <script>
+    async function toggleHiddenView() {
+      const r = await fetch('/api/toggle-show-hidden', { method: 'POST' });
+      const d = await r.json();
+      location.reload();
+    }
+  </script>

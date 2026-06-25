@@ -1,0 +1,179 @@
+<%
+const breadcrumbs = [
+  { label: 'People', url: '/people' },
+  { label: person.name || 'Unknown', url: '' },
+];
+%>
+<%- include('partials/header', { title: person.name || 'Unknown', page, breadcrumbs, favs: false }) %>
+
+<div class="person-header">
+  <div class="person-header-face">
+    <% if (person.cover_face_id) { %>
+    <img src="/immich-person-thumb/<%= person.cover_face_id %>" alt="">
+    <% } else { %>
+    <div class="person-face--empty large">&#128100;</div>
+    <% } %>
+  </div>
+  <div class="person-header-info">
+    <h1 id="person-name-display"><%= person.name || 'Unknown' %></h1>
+    <p class="subtitle"><%= photos.length %> photos<% if (person.isHidden) { %> &bull; <span class="person-hidden-label">Hidden from People page</span><% } %></p>
+    <div class="person-name-edit">
+      <div style="position:relative;flex:1">
+        <input type="text" id="name-input" value="<%= person.name || '' %>" placeholder="Enter name…"
+               autocomplete="off" oninput="onNameInput()" onkeydown="onNameKey(event)">
+        <div class="person-dropdown" id="name-dropdown"></div>
+      </div>
+      <button class="btn-primary btn-sm" onclick="saveName()">Save</button>
+      <span class="save-status" id="name-status"></span>
+    </div>
+    <div class="person-header-actions">
+      <button class="hide-btn <%= allHidden ? 'hide-btn--on' : '' %>" id="hide-all-btn" onclick="toggleHideAll()">
+        <%- allHidden ? '&#128065; Unhide all photos' : '&#128274; Hide all photos' %>
+      </button>
+      <a class="hijabi-btn <%= isHijabi ? 'hijabi-btn--on' : '' %>" href="/person/<%= person.id %>/hijabi-review">
+        &#129495; <%= isHijabi ? 'Hijabi (review again)' : 'Mark as hijabi' %>
+      </a>
+      <% if (person.isHidden) { %>
+      <button class="btn-sm btn-restore" onclick="restorePerson()">&#128065; Restore to People page</button>
+      <% } else { %>
+      <button class="btn-danger-sm" onclick="removePerson()">&#10005; Remove + hide photos</button>
+      <button class="btn-danger-sm" onclick="removePersonOnly()">&#10005; Remove from People only</button>
+      <% } %>
+    </div>
+  </div>
+</div>
+
+<div class="photo-grid">
+  <% for (const p of photos) { %>
+  <div class="person-photo-wrap">
+    <a class="photo-thumb-wrap <%= p.hidden ? 'is-hidden' : '' %> <%= p.favorite ? 'is-favorite' : '' %>"
+       href="/photo/<%= p.id %>">
+      <img src="/thumb/<%= p.id %>" alt="<%= p.filename %>" loading="lazy">
+      <% if (p.hidden)   { %><span class="hidden-indicator">&#128274;</span><% } %>
+      <% if (p.favorite) { %><span class="fav-indicator">♥</span><% } %>
+    </a>
+    <% if (p.immich_id) { %>
+    <button class="set-cover-btn" onclick="setCoverPhoto('<%= p.immich_id %>', this)" title="Set as cover photo">
+      &#9733;
+    </button>
+    <% } %>
+  </div>
+  <% } %>
+</div>
+
+<script>
+const PERSON_ID = '<%- person.id %>';
+let allHidden = <%- allHidden ? 'true' : 'false' %>;
+let isHijabi  = <%- isHijabi  ? 'true' : 'false' %>;
+
+async function restorePerson() {
+  await fetch(`/api/person/${PERSON_ID}/unhide-person`, { method: 'POST' });
+  window.location.href = '/people';
+}
+
+async function removePerson() {
+  if (!confirm('Remove from People and hide all their photos?\n\nYou can reveal them with the "Showing hidden" toggle.')) return;
+  await fetch(`/api/person/${PERSON_ID}/remove`, { method: 'POST' });
+  window.location.href = '/people';
+}
+
+async function removePersonOnly() {
+  if (!confirm('Remove from People page only?\n\nTheir photos will stay visible. This person won\'t appear on the People page anymore.')) return;
+  await fetch(`/api/person/${PERSON_ID}/remove-only`, { method: 'POST' });
+  window.location.href = '/people';
+}
+
+async function toggleHideAll() {
+  const r = await fetch(`/api/person/${PERSON_ID}/hide`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hidden: !allHidden }),
+  });
+  const d = await r.json();
+  if (d.ok) {
+    allHidden = d.hidden;
+    const btn = document.getElementById('hide-all-btn');
+    btn.innerHTML = allHidden ? '&#128065; Unhide all photos' : '&#128274; Hide all photos';
+    btn.classList.toggle('hide-btn--on', allHidden);
+  }
+}
+
+async function setCoverPhoto(assetId, btn) {
+  const r = await fetch(`/api/person/${PERSON_ID}/cover-photo`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ assetId }),
+  });
+  const d = await r.json();
+  if (d.ok) {
+    document.querySelectorAll('.set-cover-btn').forEach(b => b.classList.remove('set-cover-btn--on'));
+    btn.classList.add('set-cover-btn--on');
+    // Reload thumbnail after short delay so Immich processes it
+    setTimeout(() => {
+      const img = document.querySelector('.person-header-face img');
+      if (img) img.src = img.src.split('?')[0] + '?t=' + Date.now();
+    }, 1500);
+  }
+}
+
+let _nameTimer = null;
+
+function onNameInput() {
+  const q = document.getElementById('name-input').value.trim();
+  clearTimeout(_nameTimer);
+  if (!q) { closeNameDropdown(); return; }
+  _nameTimer = setTimeout(() => fetchNameSuggestions(q), 200);
+}
+
+async function fetchNameSuggestions(q) {
+  const r = await fetch(`/api/persons/search?q=${encodeURIComponent(q)}`);
+  const list = await r.json();
+  const others = list.filter(p => p.id !== PERSON_ID);
+  const drop = document.getElementById('name-dropdown');
+  if (!others.length) { drop.style.display = 'none'; return; }
+  drop.innerHTML = others.map(p => `
+    <div class="pdrop-item" onmousedown="selectExistingPerson('${p.id}', '${(p.name||'').replace(/'/g,"\\'")}')">
+      <div class="pdrop-face">
+        <img src="/immich-person-thumb/${p.id}" alt="" onerror="this.parentNode.innerHTML='&#128100;'">
+      </div>
+      <span class="pdrop-name">${p.name}</span>
+      <span class="pdrop-merge">merge →</span>
+    </div>
+  `).join('');
+  drop.style.display = 'block';
+}
+
+function closeNameDropdown() {
+  const drop = document.getElementById('name-dropdown');
+  drop.style.display = 'none';
+  drop.innerHTML = '';
+}
+
+async function selectExistingPerson(intoId, name) {
+  closeNameDropdown();
+  if (!confirm(`Merge this person into "${name}"?\n\nAll their photos will be grouped together.`)) return;
+  await fetch('/api/persons/merge', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ into: intoId, from: PERSON_ID }),
+  });
+  window.location.href = `/person/${intoId}`;
+}
+
+function onNameKey(e) {
+  if (e.key === 'Enter') { closeNameDropdown(); saveName(); }
+  if (e.key === 'Escape') closeNameDropdown();
+}
+
+async function saveName() {
+  const name = document.getElementById('name-input').value.trim();
+  closeNameDropdown();
+  await fetch(`/api/person/${PERSON_ID}/name`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  document.getElementById('person-name-display').textContent = name || 'Unknown';
+  const el = document.getElementById('name-status');
+  el.textContent = 'Saved ✓';
+  setTimeout(() => el.textContent = '', 2000);
+}
+</script>
+
+<%- include('partials/footer') %>
