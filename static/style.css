@@ -1713,10 +1713,11 @@ select:focus,
 }
 .btn-folder:hover { background: var(--border); }
 
-.sidebar-section--danger {
+.sidebar-section--danger,
+.sidebar-section--file {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .hide-btn {
@@ -1754,6 +1755,20 @@ select:focus,
   border-color: #b84040;
 }
 
+/* ── nav hamburger ─────────────────────────────────────────────────────────── */
+.nav-menu-btn {
+  display: none;
+  background: none;
+  border: none;
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--text);
+  padding: 4px 6px;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
 /* ── responsive ───────────────────────────────────────────────────────────── */
 @media (max-width: 768px) {
   .stats-row { grid-template-columns: 1fr 1fr; }
@@ -1764,12 +1779,102 @@ select:focus,
   }
   .photo-img { max-height: 60vh; }
   .camera-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .roll-header { flex-direction: column; gap: 12px; }
+  .roll-header-actions { width: 100%; }
+  .person-header { flex-direction: column; align-items: flex-start; }
+}
+
+@media (max-width: 640px) {
+  /* --- nav: hamburger layout --- */
+  .nav {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 52px;
+    padding: 0 16px;
+    gap: 0;
+    align-items: center;
+  }
+  .nav-logo { padding: 14px 0; flex: 1; line-height: 1; }
+  .hidden-toggle { margin-left: 0; order: 2; }
+  .nav-menu-btn { display: block; order: 3; }
+  .nav-links {
+    display: none;
+    flex-direction: column;
+    width: 100%;
+    order: 10;
+    border-top: 1px solid var(--border);
+    padding: 4px 0 12px;
+    gap: 0;
+  }
+  .nav-links.open { display: flex; }
+  .nav-links a {
+    padding: 12px 2px;
+    font-size: 0.95rem;
+    border-bottom: 1px solid var(--bg);
+    color: var(--text);
+  }
+  .nav-links a:last-child { border-bottom: none; }
+
+  /* --- layout --- */
+  .main { padding: 16px; }
+  .page-header h1 { font-size: 1.4rem; }
+
+  /* --- tabs: horizontally scrollable --- */
+  .tab-bar {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+    gap: 0;
+  }
+  .tab-bar::-webkit-scrollbar { display: none; }
+  .tab-btn { white-space: nowrap; flex-shrink: 0; }
+
+  .search-tabs {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+  }
+  .search-tabs::-webkit-scrollbar { display: none; }
+  .search-tab { white-space: nowrap; flex-shrink: 0; }
+
+  /* --- bulk bar: allow wrapping on narrow screens --- */
+  .bulk-bar {
+    max-width: calc(100% - 32px);
+    flex-wrap: wrap;
+    padding: 10px 14px;
+    gap: 8px;
+    bottom: 16px;
+  }
+
+  /* --- review page --- */
+  .review-header { flex-direction: column; gap: 12px; }
+  .review-actions { align-self: flex-start; }
+
+  /* --- people --- */
+  .people-toolbar { flex-wrap: wrap; }
+  .people-search-input { max-width: 100%; }
 }
 
 @media (max-width: 480px) {
-  .main { padding: 16px; }
-  .nav { padding: 0 16px; gap: 16px; }
-  .nav-links { gap: 14px; }
   .stats-row { grid-template-columns: 1fr 1fr; gap: 10px; }
-  .photo-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  .photo-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+
+  /* --- larger tap targets --- */
+  .btn-primary, .btn-secondary { padding: 10px 16px; }
+  .year-btn { padding: 7px 14px; }
+  .tab-btn { padding: 10px 14px; }
+
+  /* --- prevent iOS zoom on input focus (requires 16px+) --- */
+  input[type="text"],
+  textarea,
+  select,
+  .tags-input,
+  .notes-textarea,
+  .search-input,
+  .people-search-input,
+  .person-name-edit input,
+  .photo-person-input,
+  .people-rename-input { font-size: 16px; }
 }

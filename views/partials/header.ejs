@@ -9,7 +9,7 @@
 <body>
   <nav class="nav">
     <a class="nav-logo" href="/">Archive</a>
-    <div class="nav-links">
+    <div class="nav-links" id="nav-links">
       <a href="/" class="<%= page === 'index' ? 'active' : '' %>">Overview</a>
       <a href="/cameras" class="<%= ['cameras','camera'].includes(page) ? 'active' : '' %>">Cameras</a>
       <a href="/rolls" class="<%= page === 'rolls' ? 'active' : '' %>">Film Rolls</a>
@@ -24,6 +24,7 @@
             title="<%= showHidden ? 'Click to hide private photos' : 'Click to reveal hidden photos' %>">
       <%- showHidden ? '&#128065; Showing hidden' : '&#128274; Private' %>
     </button>
+    <button class="nav-menu-btn" id="nav-menu-btn" aria-label="Toggle menu" aria-expanded="false">&#9776;</button>
   </nav>
   <main class="main">
     <% if (typeof breadcrumbs !== 'undefined' && breadcrumbs && breadcrumbs.length) { %>
@@ -41,7 +42,17 @@
   <script>
     async function toggleHiddenView() {
       const r = await fetch('/api/toggle-show-hidden', { method: 'POST' });
-      const d = await r.json();
       location.reload();
     }
+    (function() {
+      const btn = document.getElementById('nav-menu-btn');
+      const links = document.getElementById('nav-links');
+      if (btn && links) {
+        btn.addEventListener('click', function() {
+          const open = links.classList.toggle('open');
+          btn.setAttribute('aria-expanded', open);
+          btn.innerHTML = open ? '&#10005;' : '&#9776;';
+        });
+      }
+    })();
   </script>

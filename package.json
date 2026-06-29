@@ -7,6 +7,7 @@
     "scan": "node scanner.js"
   },
   "dependencies": {
+    "archiver": "^8.0.0",
     "better-sqlite3": "^12.11.1",
     "dotenv": "^17.4.2",
     "ejs": "^6.0.1",

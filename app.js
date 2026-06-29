@@ -6,6 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const fs = require('fs');
 const { exec } = require('child_process');
+const { ZipArchive } = require('archiver');
 
 // ── Immich API helper ─────────────────────────────────────────────────────────
 const IMMICH_URL = (process.env.IMMICH_URL || 'http://localhost:2283').replace(/\/$/, '');
@@ -132,6 +133,37 @@ app.get('/full/:id', (req, res) => {
   conn.close();
   if (!row) return res.status(404).end();
   streamFile(res, row.file_path, mimeFor(row.file_path));
+});
+
+app.get('/api/roll/:id/download', (req, res) => {
+  const conn = db();
+  const roll = conn.prepare('SELECT * FROM rolls WHERE id=?').get(req.params.id);
+  if (!roll) { conn.close(); return res.status(404).end(); }
+
+  const showHidden = res.locals.showHidden;
+  const hf = showHidden ? '' : 'AND hidden=0';
+  const photos = conn.prepare(
+    `SELECT file_path, filename FROM photos WHERE roll_id=? ${hf} ORDER BY filename`
+  ).all(req.params.id);
+  conn.close();
+
+  const parts = (roll.rel_path || '').split(/[/\\]/);
+  const rollName = (parts[parts.length - 1] || 'album').replace(/[^\w\s.\-]/g, '_');
+
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${rollName}.zip"`);
+
+  const archive = new ZipArchive({ zlib: { level: 0 } });
+  archive.on('error', () => res.end());
+  archive.pipe(res);
+
+  for (const photo of photos) {
+    if (fs.existsSync(photo.file_path)) {
+      archive.file(photo.file_path, { name: photo.filename });
+    }
+  }
+
+  archive.finalize();
 });
 
 // ── pages ─────────────────────────────────────────────────────────────────────
@@ -623,6 +655,44 @@ app.post('/api/toggle-show-hidden', (req, res) => {
   const newVal = !res.locals.showHidden;
   res.setHeader('Set-Cookie', `show_hidden=${newVal ? '1' : '0'}; Path=/; SameSite=Lax`);
   res.json({ showHidden: newVal });
+});
+
+// ── roll/album search ─────────────────────────────────────────────────────────
+
+app.get('/api/search/rolls', (req, res) => {
+  const { q = '', camera = '', year = '' } = req.query;
+  const showHidden = res.locals.showHidden;
+  const conn = db();
+
+  const params = [];
+  let where = 'WHERE 1=1';
+  if (q) {
+    where += ' AND (r.rel_path LIKE ? OR r.film_stock LIKE ? OR r.date_label LIKE ? OR c.name LIKE ? OR r.notes LIKE ?)';
+    params.push(...Array(5).fill(`%${q}%`));
+  }
+  if (camera) { where += ' AND c.id=?'; params.push(camera); }
+  if (year)   { where += ' AND r.year=?'; params.push(year); }
+
+  const hf  = showHidden ? '' : 'AND p.hidden=0';
+  const hf2 = showHidden ? '' : 'AND p2.hidden=0';
+
+  const rolls = conn.prepare(`
+    SELECT r.id, r.rel_path, r.year, r.date_label, r.film_stock, r.notes,
+           c.id as camera_id, c.name as camera_name,
+           COUNT(p.id) as photo_count,
+           COALESCE(r.cover_photo_id,
+             (SELECT p2.id FROM photos p2 WHERE p2.roll_id=r.id ${hf2} LIMIT 1)) as preview_id
+    FROM rolls r
+    JOIN cameras c ON r.camera_id=c.id
+    LEFT JOIN photos p ON p.roll_id=r.id ${hf}
+    ${where}
+    GROUP BY r.id
+    ORDER BY r.year DESC, r.date_label DESC
+    LIMIT 60
+  `).all(...params);
+
+  conn.close();
+  res.json(rolls);
 });
 
 // ── visual search (Immich smart search) ──────────────────────────────────────

@@ -5,7 +5,8 @@
 </div>
 
 <div class="search-tabs">
-  <button class="search-tab search-tab--active" id="tab-keyword" onclick="switchTab('keyword')">Keyword</button>
+  <button class="search-tab search-tab--active" id="tab-keyword" onclick="switchTab('keyword')">Photos</button>
+  <button class="search-tab" id="tab-albums" onclick="switchTab('albums')">Albums</button>
   <button class="search-tab" id="tab-visual" onclick="switchTab('visual')">Visual Search</button>
 </div>
 
@@ -85,6 +86,31 @@
   <% } %>
 </div>
 
+<!-- Albums search -->
+<div id="panel-albums" style="display:none">
+  <div class="album-search-form">
+    <input class="search-input" type="text" id="album-input" placeholder="Search by name, film stock, notes…">
+    <div class="filter-row" style="margin-top:8px">
+      <select id="album-camera">
+        <option value="">All cameras</option>
+        <% for (const c of allCameras) { %>
+        <option value="<%= c.id %>"><%= c.name.replace(/^35mm prints \/ |^Digital \/ /,'') %></option>
+        <% } %>
+      </select>
+      <select id="album-year">
+        <option value="">All years</option>
+        <% for (const y of allYears) { %>
+        <option value="<%= y.year %>"><%= y.year %></option>
+        <% } %>
+      </select>
+      <button class="btn-primary" onclick="runAlbumSearch()">Search</button>
+      <button class="btn-ghost" onclick="clearAlbumSearch()">Clear</button>
+    </div>
+  </div>
+  <div id="album-status" class="visual-status" style="display:none">Searching…</div>
+  <div id="album-results" class="roll-grid" style="margin-top:20px"></div>
+</div>
+
 <!-- Visual search -->
 <div id="panel-visual" style="display:none">
   <div class="visual-search-box">
@@ -107,12 +133,73 @@
 </div>
 
 <script>
+const TABS = ['keyword', 'albums', 'visual'];
 function switchTab(tab) {
-  document.getElementById('panel-keyword').style.display = tab === 'keyword' ? '' : 'none';
-  document.getElementById('panel-visual').style.display  = tab === 'visual'  ? '' : 'none';
-  document.getElementById('tab-keyword').classList.toggle('search-tab--active', tab === 'keyword');
-  document.getElementById('tab-visual').classList.toggle('search-tab--active',  tab === 'visual');
+  for (const t of TABS) {
+    document.getElementById('panel-' + t).style.display = t === tab ? '' : 'none';
+    document.getElementById('tab-' + t).classList.toggle('search-tab--active', t === tab);
+  }
+  if (tab === 'albums' && !document.getElementById('album-results').innerHTML) {
+    runAlbumSearch();
+  }
 }
+
+function rollLeaf(rel) {
+  const parts = (rel || '').split(/[/\\/]/);
+  return parts[parts.length - 1] || rel;
+}
+
+async function runAlbumSearch() {
+  const q      = document.getElementById('album-input').value.trim();
+  const camera = document.getElementById('album-camera').value;
+  const year   = document.getElementById('album-year').value;
+  const status = document.getElementById('album-status');
+  const grid   = document.getElementById('album-results');
+
+  status.style.display = '';
+  status.textContent = 'Searching…';
+  grid.innerHTML = '';
+
+  const qs = new URLSearchParams({ q, camera, year });
+  const r = await fetch('/api/search/rolls?' + qs);
+  const rolls = await r.json();
+
+  status.style.display = 'none';
+  if (!rolls.length) {
+    grid.innerHTML = '<p class="no-results">No albums found.</p>';
+    return;
+  }
+
+  grid.innerHTML = rolls.map(roll => {
+    const name       = rollLeaf(roll.rel_path);
+    const camLabel   = (roll.camera_name || '').replace(/^35mm prints \/ |^Digital \/ /, '');
+    const thumb      = roll.preview_id ? `<img src="/thumb/${roll.preview_id}" alt="" loading="lazy">` : '';
+    const filmBadge  = roll.film_stock ? `<div class="roll-film">${roll.film_stock}</div>` : '';
+    const dateLine   = roll.date_label || roll.year || '';
+    return `
+      <a class="roll-card" href="/roll/${roll.id}">
+        <div class="roll-thumb">${thumb}</div>
+        <div class="roll-info">
+          <div class="roll-camera">${camLabel}</div>
+          <div class="roll-date">${name}</div>
+          ${dateLine ? `<div class="roll-count">${dateLine}</div>` : ''}
+          ${filmBadge}
+          <div class="roll-count">${roll.photo_count} photo${roll.photo_count !== 1 ? 's' : ''}</div>
+        </div>
+      </a>`;
+  }).join('');
+}
+
+function clearAlbumSearch() {
+  document.getElementById('album-input').value = '';
+  document.getElementById('album-camera').value = '';
+  document.getElementById('album-year').value = '';
+  runAlbumSearch();
+}
+
+document.getElementById('album-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') runAlbumSearch();
+});
 
 function quickSearch(q) {
   document.getElementById('visual-input').value = q;

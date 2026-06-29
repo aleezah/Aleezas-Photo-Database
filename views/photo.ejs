@@ -101,7 +101,8 @@ const breadcrumbs = [
       </div>
     </div>
 
-    <div class="sidebar-section">
+    <div class="sidebar-section sidebar-section--file">
+      <a class="btn-folder" href="/full/<%= photo.id %>" download="<%= photo.filename %>">&#8681; Download original</a>
       <button class="btn-folder" onclick="openFolder()">&#128193; Open in Explorer</button>
     </div>
 

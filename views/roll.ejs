@@ -13,12 +13,13 @@ const breadcrumbs = [
     <div class="roll-meta-row">
       <% if (roll.year) { %><span class="meta-badge"><%= roll.year %></span><% } %>
       <span class="meta-badge film-stock-badge" id="film-stock-display">
-        <%= roll.film_stock || '<em>No film stock set</em>' %>
+        <% if (roll.film_stock) { %><%= roll.film_stock %><% } else { %><em>No film stock set</em><% } %>
       </span>
       <span class="meta-badge"><%= photos.length %> photos</span>
     </div>
   </div>
   <div class="roll-header-actions">
+    <a class="btn-secondary" href="/api/roll/<%= roll.id %>/download">&#8681; Download</a>
     <button class="btn-secondary" id="select-btn" onclick="toggleSelectMode()">Select</button>
     <button class="btn-secondary" onclick="toggleEdit()">Edit details</button>
     <button class="btn-danger-sm" onclick="deleteRoll()">Delete roll</button>
