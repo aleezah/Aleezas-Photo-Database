@@ -76,6 +76,9 @@ const visible = rolls.filter(r =>
         <% } %>
       </div>
     </a>
+    <div class="roll-card-actions">
+      <button class="roll-card-hide-btn" onclick="toggleFolderHide(event, <%= r.id %>, this)">&#128274; Hide</button>
+    </div>
   </div>
   <% } %>
 </div>
@@ -109,6 +112,20 @@ function handleCardClick(e, a) {
 
 function updateCount() {
   document.getElementById('bulk-count').textContent = selected.size + ' selected';
+}
+
+async function toggleFolderHide(e, id, btn) {
+  e.preventDefault();
+  const r = await fetch(`/api/roll/${id}/hidden`, { method: 'POST' });
+  const d = await r.json();
+  const wrap = btn.closest('.roll-card-wrap');
+  if (d.hidden) {
+    wrap.classList.add('roll-card-wrap--hidden');
+    btn.innerHTML = '&#128065; Unhide';
+  } else {
+    wrap.classList.remove('roll-card-wrap--hidden');
+    btn.innerHTML = '&#128274; Hide';
+  }
 }
 
 async function bulkAction(action) {

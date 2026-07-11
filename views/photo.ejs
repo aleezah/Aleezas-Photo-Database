@@ -26,7 +26,20 @@ const breadcrumbs = [
   </div>
 
   <div class="photo-viewer">
-    <% if (photo.hidden) { %>
+    <% if (isVideo) { %>
+    <div style="position:relative">
+      <video class="photo-video" id="main-video" src="/full/<%= photo.id %>" controls preload="metadata"
+             onerror="onVideoError()">
+        Your browser does not support HTML5 video.
+      </video>
+      <div id="video-processing" style="display:none;position:absolute;inset:0;background:rgba(0,0,0,0.75);
+           color:#fff;flex-direction:column;align-items:center;justify-content:center;gap:10px;border-radius:var(--radius)">
+        <span style="font-size:1.5rem">⏳</span>
+        <span style="font-weight:600">Optimizing for web playback…</span>
+        <span style="font-size:0.85rem;color:#ccc" id="proc-status">Starting…</span>
+      </div>
+    </div>
+    <% } else if (photo.hidden) { %>
     <div class="photo-blur-wrap" id="photo-blur-wrap">
       <img src="/full/<%= photo.id %>" alt="<%= photo.filename %>" class="photo-img photo-img--blurred" id="blurred-img">
       <div class="blur-overlay" id="blur-overlay">
@@ -103,6 +116,19 @@ const breadcrumbs = [
 
     <div class="sidebar-section sidebar-section--file">
       <a class="btn-folder" href="/full/<%= photo.id %>" download="<%= photo.filename %>">&#8681; Download original</a>
+      <% if (!isVideo) { %>
+      <div style="display:flex;gap:6px">
+        <button class="btn-folder" style="flex:1" onclick="rotatePhoto(-90)">&#8634; Rotate left</button>
+        <button class="btn-folder" style="flex:1" onclick="rotatePhoto(90)">&#8635; Rotate right</button>
+      </div>
+      <% } %>
+      <% if (isVideo && !photo.filename.toLowerCase().endsWith('.mp4')) { %>
+      <button class="btn-folder" id="convert-btn" onclick="convertToMp4()">&#9654; Convert to MP4</button>
+      <% } %>
+      <% if (isVideo) { %>
+      <button class="btn-folder" id="compress-btn" onclick="compressVideo()">&#9000; Compress (High quality)</button>
+      <button class="btn-folder" id="clear-cache-btn" onclick="clearWebCache()">&#8635; Clear web cache</button>
+      <% } %>
       <button class="btn-folder" onclick="openFolder()">&#128193; Open in Explorer</button>
     </div>
 
@@ -302,6 +328,95 @@ if (revealBtn) {
 
 async function openFolder() {
   await fetch(`/open-folder/${PID}`);
+}
+
+function startTimer(btn, label) {
+  let secs = 0;
+  btn.textContent = `⏳ ${label} (0s)`;
+  const iv = setInterval(() => {
+    secs++;
+    const m = Math.floor(secs / 60), s = secs % 60;
+    btn.textContent = `⏳ ${label} (${m > 0 ? m + 'm ' : ''}${s}s)`;
+  }, 1000);
+  return iv;
+}
+
+async function rotatePhoto(degrees) {
+  const r = await fetch(`/api/photo/${PID}/rotate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ degrees }),
+  });
+  const d = await r.json();
+  if (d.ok) location.reload();
+  else alert('Rotation failed: ' + (d.error || 'unknown error'));
+}
+
+async function clearWebCache() {
+  const btn = document.getElementById('clear-cache-btn');
+  btn.textContent = '⏳ Clearing…';
+  btn.disabled = true;
+  await fetch(`/api/photo/${PID}/web-cache`, { method: 'DELETE' });
+  btn.textContent = '✓ Cleared — reloading…';
+  setTimeout(() => location.reload(), 800);
+}
+
+async function onVideoError() {
+  const overlay = document.getElementById('video-processing');
+  if (!overlay || overlay.style.display === 'flex') return;
+  overlay.style.display = 'flex';
+
+  const statusEl = document.getElementById('proc-status');
+  let secs = 0;
+
+  const poll = async () => {
+    const r = await fetch(`/api/photo/${PID}/web-status`);
+    const d = await r.json();
+    if (d.ready) {
+      statusEl.textContent = 'Done — reloading…';
+      setTimeout(() => location.reload(), 800);
+      return;
+    }
+    secs += 5;
+    const m = Math.floor(secs / 60), s = secs % 60;
+    statusEl.textContent = `Processing… ${m > 0 ? m + 'm ' : ''}${s}s elapsed`;
+    setTimeout(poll, 5000);
+  };
+  poll();
+}
+
+async function compressVideo() {
+  const btn = document.getElementById('compress-btn');
+  if (!btn) return;
+  if (!confirm('This will re-encode the video at high quality and replace the original file. Continue?')) return;
+  btn.disabled = true;
+  const iv = startTimer(btn, 'Compressing…');
+  const r = await fetch(`/api/photo/${PID}/compress`, { method: 'POST' });
+  clearInterval(iv);
+  const d = await r.json();
+  if (d.ok) {
+    btn.textContent = '✓ Done — reloading…';
+    setTimeout(() => location.reload(), 800);
+  } else {
+    btn.textContent = '✗ Failed';
+    btn.disabled = false;
+  }
+}
+
+async function convertToMp4() {
+  const btn = document.getElementById('convert-btn');
+  if (!btn) return;
+  btn.disabled = true;
+  const iv = startTimer(btn, 'Converting…');
+  const r = await fetch(`/api/photo/${PID}/convert`, { method: 'POST' });
+  clearInterval(iv);
+  const d = await r.json();
+  if (d.ok) {
+    btn.textContent = '✓ Done — reloading…';
+    setTimeout(() => location.reload(), 800);
+  } else {
+    btn.textContent = '✗ Failed';
+    btn.disabled = false;
+  }
 }
 
 async function toggleHide() {

@@ -5,8 +5,58 @@ const sharp = require('sharp');
 const path = require('path');
 const crypto = require('crypto');
 const fs = require('fs');
-const { exec } = require('child_process');
+const { exec, execFile, spawn } = require('child_process');
 const { ZipArchive } = require('archiver');
+const ffmpegPath = require('ffmpeg-static');
+
+const compressProgress = new Map();
+
+function getDuration(filePath) {
+  return new Promise(resolve => {
+    execFile(ffmpegPath, ['-i', filePath], (_err, _stdout, stderr) => {
+      const m = stderr.match(/Duration: (\d+):(\d+):(\d+\.?\d*)/);
+      if (m) resolve(parseFloat(m[1]) * 3600 + parseFloat(m[2]) * 60 + parseFloat(m[3]));
+      else resolve(0);
+    });
+  });
+}
+
+function spawnFfmpeg(args, photoId, totalSecs) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(ffmpegPath, ['-progress', 'pipe:1', ...args]);
+    let buf = '';
+    proc.stdout.on('data', chunk => {
+      buf += chunk.toString();
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        const eq = line.indexOf('=');
+        if (eq < 0) continue;
+        const key = line.slice(0, eq).trim();
+        const val = line.slice(eq + 1).trim();
+        if (key === 'out_time_ms') {
+          const ms = parseInt(val, 10);
+          if (isNaN(ms) || ms < 0) continue;
+          const pct = totalSecs > 0 ? Math.min(99, (ms / 1000 / totalSecs) * 100) : 0;
+          const prev = compressProgress.get(photoId) || {};
+          compressProgress.set(photoId, { ...prev, pct: Math.round(pct) });
+        } else if (key === 'speed') {
+          const speed = parseFloat(val);
+          if (isNaN(speed) || speed <= 0) continue;
+          const prev = compressProgress.get(photoId) || { pct: 0 };
+          const doneSecs = (prev.pct / 100) * totalSecs;
+          const eta = totalSecs > 0 ? Math.round((totalSecs - doneSecs) / speed) : null;
+          compressProgress.set(photoId, { ...prev, speed: speed.toFixed(1) + 'x', eta });
+        }
+      }
+    });
+    proc.on('close', code => {
+      compressProgress.delete(photoId);
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg exited with code ${code}`));
+    });
+  });
+}
 
 // ── Immich API helper ─────────────────────────────────────────────────────────
 const IMMICH_URL = (process.env.IMMICH_URL || 'http://localhost:2283').replace(/\/$/, '');
@@ -24,11 +74,23 @@ const DB_PATH = path.join(BASE_DIR, 'film.db');
 const THUMBS_DIR = path.join(BASE_DIR, 'thumbs');
 fs.mkdirSync(THUMBS_DIR, { recursive: true });
 
+const WEB_CACHE_DIR = path.join(THUMBS_DIR, 'web');
+fs.mkdirSync(WEB_CACHE_DIR, { recursive: true });
+
+const transcodingJobs = new Set();
+
+function webCachePath(id) {
+  return path.join(WEB_CACHE_DIR, `${id}.mp4`);
+}
+
 // ── startup migrations ────────────────────────────────────────────────────────
 {
   const conn = new Database(DB_PATH);
   try { conn.exec('ALTER TABLE photos ADD COLUMN hidden INTEGER DEFAULT 0'); } catch {}
   try { conn.exec('ALTER TABLE rolls ADD COLUMN cover_photo_id INTEGER REFERENCES photos(id)'); } catch {}
+  try { conn.exec('ALTER TABLE rolls ADD COLUMN hidden INTEGER DEFAULT 0'); } catch {}
+  try { conn.exec('ALTER TABLE rolls ADD COLUMN share_token TEXT'); } catch {}
+  try { conn.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_rolls_share_token ON rolls(share_token)'); } catch {}
   try { conn.exec('ALTER TABLE persons ADD COLUMN hidden INTEGER DEFAULT 0'); } catch {}
   try { conn.exec('ALTER TABLE photos ADD COLUMN immich_id TEXT'); } catch {}
   try { conn.exec('CREATE INDEX IF NOT EXISTS idx_photos_immich_id ON photos(immich_id)'); } catch {}
@@ -92,26 +154,116 @@ function thumbFor(filePath) {
   return path.join(THUMBS_DIR, h + '.jpg');
 }
 
-function streamFile(res, filePath, mimeType) {
+// Full cascade delete for a photo row (conn must already be open)
+function deletePhotoRow(conn, photo) {
+  // DB cascade
+  const faceIds = conn.prepare('SELECT id FROM faces WHERE photo_id=?').all(photo.id).map(f => f.id);
+  for (const fid of faceIds) {
+    conn.prepare('UPDATE persons SET cover_face_id=NULL WHERE cover_face_id=?').run(fid);
+    conn.prepare('DELETE FROM face_persons WHERE face_id=?').run(fid);
+  }
+  conn.prepare('UPDATE rolls SET cover_photo_id=NULL WHERE cover_photo_id=?').run(photo.id);
+  conn.prepare('DELETE FROM photo_embeddings WHERE photo_id=?').run(photo.id);
+  conn.prepare('DELETE FROM faces WHERE photo_id=?').run(photo.id);
+  conn.prepare('DELETE FROM photo_tags WHERE photo_id=?').run(photo.id);
+  conn.prepare('DELETE FROM photos WHERE id=?').run(photo.id);
+  // Disk cleanup
+  const toDelete = [
+    photo.file_path,
+    thumbFor(photo.file_path),
+    path.join(THUMBS_DIR, 'display', `${photo.id}.jpg`),
+    webCachePath(photo.id),
+  ];
+  for (const f of toDelete) {
+    try { if (f && fs.existsSync(f)) fs.unlinkSync(f); } catch {}
+  }
+}
+
+const VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.m4v', '.webm']);
+function isVideoFile(filePath) {
+  return VIDEO_EXTS.has(path.extname(filePath).toLowerCase());
+}
+
+function streamFile(res, filePath, mimeType, cache = false) {
   if (!fs.existsSync(filePath)) return res.status(404).end();
+  const stat = fs.statSync(filePath);
   res.setHeader('Content-Type', mimeType);
+  res.setHeader('Content-Length', stat.size);
+  if (cache) {
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.setHeader('Last-Modified', stat.mtime.toUTCString());
+  }
   fs.createReadStream(filePath).pipe(res);
+}
+
+function streamMedia(req, res, filePath, mimeType) {
+  if (!fs.existsSync(filePath)) return res.status(404).end();
+  const total = fs.statSync(filePath).size;
+  const range = req.headers.range;
+  if (range) {
+    const [startStr, endStr] = range.replace(/bytes=/, '').split('-');
+    const start = parseInt(startStr, 10);
+    const end   = endStr ? parseInt(endStr, 10) : Math.min(start + 1024 * 1024 - 1, total - 1);
+    res.writeHead(206, {
+      'Content-Range':  `bytes ${start}-${end}/${total}`,
+      'Accept-Ranges':  'bytes',
+      'Content-Length': end - start + 1,
+      'Content-Type':   mimeType,
+    });
+    fs.createReadStream(filePath, { start, end }).pipe(res);
+  } else {
+    res.writeHead(200, {
+      'Content-Length': total,
+      'Content-Type':   mimeType,
+      'Accept-Ranges':  'bytes',
+    });
+    fs.createReadStream(filePath).pipe(res);
+  }
 }
 
 function mimeFor(filePath) {
   const ext = path.extname(filePath).toLowerCase();
-  if (ext === '.png') return 'image/png';
+  if (ext === '.png')  return 'image/png';
   if (ext === '.tif' || ext === '.tiff') return 'image/tiff';
+  if (ext === '.mp4' || ext === '.m4v')  return 'video/mp4';
+  if (ext === '.mov')  return 'video/quicktime';
+  if (ext === '.avi')  return 'video/x-msvideo';
+  if (ext === '.mkv')  return 'video/x-matroska';
+  if (ext === '.webm') return 'video/webm';
   return 'image/jpeg';
 }
 
 // ── images ────────────────────────────────────────────────────────────────────
+
+const VIDEO_THUMB_SVG = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160">
+  <rect width="160" height="160" fill="#1a1917"/>
+  <circle cx="80" cy="80" r="30" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="1.5"/>
+  <polygon points="71,66 71,94 101,80" fill="rgba(255,255,255,0.7)"/>
+</svg>`);
 
 app.get('/thumb/:id', async (req, res) => {
   const conn = db();
   const row = conn.prepare('SELECT file_path FROM photos WHERE id=?').get(req.params.id);
   conn.close();
   if (!row) return res.status(404).end();
+
+  if (isVideoFile(row.file_path)) {
+    const tp = thumbFor(row.file_path);
+    if (!fs.existsSync(tp)) {
+      await new Promise(resolve => {
+        execFile(ffmpegPath, [
+          '-i', row.file_path,
+          '-ss', '00:00:01',
+          '-vframes', '1',
+          '-vf', 'scale=480:480:force_original_aspect_ratio=decrease',
+          '-y', tp,
+        ], resolve);
+      });
+    }
+    if (fs.existsSync(tp)) return streamFile(res, tp, 'image/jpeg', true);
+    res.setHeader('Content-Type', 'image/svg+xml');
+    return res.send(VIDEO_THUMB_SVG);
+  }
 
   const tp = thumbFor(row.file_path);
   if (!fs.existsSync(tp)) {
@@ -124,15 +276,69 @@ app.get('/thumb/:id', async (req, res) => {
       return streamFile(res, row.file_path, mimeFor(row.file_path));
     }
   }
-  streamFile(res, tp, 'image/jpeg');
+  streamFile(res, tp, 'image/jpeg', true);
 });
 
 app.get('/full/:id', (req, res) => {
   const conn = db();
-  const row = conn.prepare('SELECT file_path FROM photos WHERE id=?').get(req.params.id);
+  const row = conn.prepare('SELECT id, file_path, filename FROM photos WHERE id=?').get(req.params.id);
   conn.close();
   if (!row) return res.status(404).end();
-  streamFile(res, row.file_path, mimeFor(row.file_path));
+  const mime = mimeFor(row.file_path);
+  if (isVideoFile(row.file_path)) {
+    const wp = webCachePath(row.id);
+    if (fs.existsSync(wp)) return streamMedia(req, res, wp, 'video/mp4');
+    // Kick off background web-cache creation so next download is faster
+    if (!transcodingJobs.has(row.id)) {
+      transcodingJobs.add(row.id);
+      const tmpPath = wp + '.tmp.mp4';
+      execFile(ffmpegPath, [
+        '-i', row.file_path,
+        '-c:v', 'libx264', '-crf', '22', '-preset', 'ultrafast',
+        '-vf', 'scale=-2:min(ih\\,1080)',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac',
+        '-movflags', '+faststart',
+        '-y', tmpPath,
+      ], (err) => {
+        transcodingJobs.delete(row.id);
+        if (!err) { try { fs.renameSync(tmpPath, wp); } catch {} }
+        else { try { fs.unlinkSync(tmpPath); } catch {} }
+      });
+    }
+    return streamMedia(req, res, row.file_path, mime);
+  }
+  streamFile(res, row.file_path, mime);
+});
+
+app.get('/api/photo/:id/web-status', (req, res) => {
+  const id = Number(req.params.id);
+  const wp = webCachePath(id);
+  if (fs.existsSync(wp)) return res.json({ ready: true, transcoding: false });
+  if (transcodingJobs.has(id)) return res.json({ ready: false, transcoding: true });
+
+  const conn = db();
+  const row = conn.prepare('SELECT file_path FROM photos WHERE id=?').get(id);
+  conn.close();
+  if (!row || !isVideoFile(row.file_path)) return res.json({ ready: false, transcoding: false });
+
+  transcodingJobs.add(id);
+  const tmpPath = wp + '.tmp.mp4';
+  execFile(ffmpegPath, [
+    '-i', row.file_path,
+    '-c:v', 'libx264', '-crf', '22', '-preset', 'ultrafast',
+    '-vf', 'scale=-2:min(ih\\,1080)',
+    '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac',
+    '-movflags', '+faststart',
+    '-y', tmpPath,
+  ], (err) => {
+    transcodingJobs.delete(id);
+    if (!err) { try { fs.renameSync(tmpPath, wp); } catch {} }
+    else { try { fs.unlinkSync(tmpPath); } catch {} }
+  });
+
+  res.json({ ready: false, transcoding: true });
 });
 
 app.get('/api/roll/:id/download', (req, res) => {
@@ -153,7 +359,7 @@ app.get('/api/roll/:id/download', (req, res) => {
   res.setHeader('Content-Type', 'application/zip');
   res.setHeader('Content-Disposition', `attachment; filename="${rollName}.zip"`);
 
-  const archive = new ZipArchive({ zlib: { level: 0 } });
+  const archive = new ZipArchive({ zlib: { level: 6 } });
   archive.on('error', () => res.end());
   archive.pipe(res);
 
@@ -253,8 +459,10 @@ app.get('/cameras', (req, res) => {
 
 app.get('/rolls', (req, res) => {
   const conn = db();
+  const showHidden   = res.locals.showHidden;
   const filterYear   = req.query.year   || '';
   const filterCamera = req.query.camera || '';
+  const tab          = req.query.tab    || 'all';
 
   const rolls = conn.prepare(`
     SELECT r.id, r.rel_path, r.year, r.date_label, r.film_stock, r.notes,
@@ -265,22 +473,28 @@ app.get('/rolls', (req, res) => {
     FROM rolls r
     JOIN cameras c ON r.camera_id=c.id
     LEFT JOIN photos p ON p.roll_id=r.id
-    WHERE c.name LIKE '35mm prints / %'
+    WHERE c.name LIKE '35mm prints / %' AND (r.hidden=0 OR ? = 1)
     GROUP BY r.id
     ORDER BY r.year DESC, r.date_label DESC, c.name
-  `).all();
+  `).all(showHidden ? 1 : 0);
 
   const years   = [...new Set(rolls.map(r => r.year).filter(Boolean))].sort((a, b) => b - a);
   const cameras = [...new Map(rolls.map(r => [r.camera_id, r.camera_name])).entries()]
                     .map(([id, name]) => ({ id, name: name.replace(/^35mm prints \/ /, '') }))
                     .sort((a, b) => a.name.localeCompare(b.name));
 
+  // Distinct known film stocks for the quick-set dropdown
+  const filmStocks = conn.prepare(
+    `SELECT DISTINCT film_stock FROM rolls WHERE film_stock IS NOT NULL AND film_stock != '' ORDER BY film_stock`
+  ).all().map(r => r.film_stock);
+
   conn.close();
-  res.render('rolls', { page: 'rolls', rolls, years, cameras, filterYear, filterCamera });
+  res.render('rolls', { page: 'rolls', rolls, years, cameras, filterYear, filterCamera, tab, filmStocks });
 });
 
 app.get('/digital', (req, res) => {
   const conn = db();
+  const showHidden   = res.locals.showHidden;
   const filterYear   = req.query.year   || '';
   const filterCamera = req.query.camera || '';
 
@@ -293,10 +507,10 @@ app.get('/digital', (req, res) => {
     FROM rolls r
     JOIN cameras c ON r.camera_id=c.id
     LEFT JOIN photos p ON p.roll_id=r.id
-    WHERE c.name LIKE 'Digital / %'
+    WHERE c.name LIKE 'Digital / %' AND (r.hidden=0 OR ? = 1)
     GROUP BY r.id
     ORDER BY r.year DESC, r.date_label DESC, c.name
-  `).all();
+  `).all(showHidden ? 1 : 0);
 
   const years   = [...new Set(rolls.map(r => r.year).filter(Boolean))].sort((a, b) => b - a);
   const cameras = [...new Map(rolls.map(r => [r.camera_id, r.camera_name])).entries()]
@@ -307,8 +521,38 @@ app.get('/digital', (req, res) => {
   res.render('digital', { page: 'digital', rolls, years, cameras, filterYear, filterCamera });
 });
 
+app.get('/videos', (req, res) => {
+  const conn = db();
+  const showHidden   = res.locals.showHidden;
+  const filterYear   = req.query.year   || '';
+  const filterCamera = req.query.camera || '';
+
+  const rolls = conn.prepare(`
+    SELECT r.id, r.rel_path, r.year, r.date_label, r.notes,
+           c.id as camera_id, c.name as camera_name,
+           COUNT(p.id) as video_count,
+           COALESCE(r.cover_photo_id,
+             (SELECT p2.id FROM photos p2 WHERE p2.roll_id=r.id LIMIT 1)) as preview_id
+    FROM rolls r
+    JOIN cameras c ON r.camera_id=c.id
+    LEFT JOIN photos p ON p.roll_id=r.id
+    WHERE c.name LIKE 'Video / %' AND (r.hidden=0 OR ? = 1)
+    GROUP BY r.id
+    ORDER BY r.year DESC, r.date_label DESC, c.name
+  `).all(showHidden ? 1 : 0);
+
+  const years   = [...new Set(rolls.map(r => r.year).filter(Boolean))].sort((a, b) => b - a);
+  const cameras = [...new Map(rolls.map(r => [r.camera_id, r.camera_name])).entries()]
+                    .map(([id, name]) => ({ id, name: name.replace(/^Video \/ /, '') }))
+                    .sort((a, b) => a.name.localeCompare(b.name));
+
+  conn.close();
+  res.render('videos', { page: 'videos', rolls, years, cameras, filterYear, filterCamera });
+});
+
 app.get('/camera/:id', (req, res) => {
   const conn = db();
+  const showHidden = res.locals.showHidden;
   const camera = conn.prepare('SELECT * FROM cameras WHERE id=?').get(req.params.id);
   if (!camera) { conn.close(); return res.status(404).end(); }
 
@@ -318,8 +562,9 @@ app.get('/camera/:id', (req, res) => {
            COALESCE(r.cover_photo_id,
              (SELECT p2.id FROM photos p2 WHERE p2.roll_id=r.id AND p2.hidden=0 LIMIT 1)) as preview_id
     FROM rolls r LEFT JOIN photos p ON p.roll_id=r.id
-    WHERE r.camera_id=? GROUP BY r.id ORDER BY r.year DESC, r.date_label
-  `).all(req.params.id);
+    WHERE r.camera_id=? AND (r.hidden=0 OR ? = 1)
+    GROUP BY r.id ORDER BY r.year DESC, r.date_label
+  `).all(req.params.id, showHidden ? 1 : 0);
 
   const filterYear = req.query.year || '';
   const years = [...new Set(rolls.map(r => r.year).filter(Boolean))].sort((a, b) => b - a);
@@ -413,10 +658,216 @@ app.get('/photo/:id', async (req, res) => {
 
   res.render('photo', {
     page: 'photo', photo, tags, peopleInPhoto,
+    isVideo: isVideoFile(photo.file_path),
     prevId: idx > 0 ? siblings[idx - 1] : null,
     nextId: idx < siblings.length - 1 ? siblings[idx + 1] : null,
     photoNum: idx + 1, total: siblings.length,
   });
+});
+
+app.get('/share/:token/photo/:photoId', (req, res) => {
+  const conn = db();
+  const roll = conn.prepare('SELECT * FROM rolls WHERE share_token=?').get(req.params.token);
+  if (!roll) { conn.close(); return res.status(404).end(); }
+
+  const photo = conn.prepare('SELECT * FROM photos WHERE id=? AND roll_id=? AND hidden=0').get(req.params.photoId, roll.id);
+  if (!photo) { conn.close(); return res.status(404).end(); }
+
+  const siblings = conn.prepare('SELECT id FROM photos WHERE roll_id=? AND hidden=0 ORDER BY filename').all(roll.id).map(r => r.id);
+  const idx = siblings.indexOf(Number(req.params.photoId));
+
+  conn.close();
+  res.render('share-photo', {
+    roll, photo, token: req.params.token,
+    isVideo: isVideoFile(photo.file_path),
+    prevId: idx > 0 ? siblings[idx - 1] : null,
+    nextId: idx < siblings.length - 1 ? siblings[idx + 1] : null,
+    photoNum: idx + 1, total: siblings.length,
+  });
+});
+
+app.get('/share/:token', (req, res) => {
+  const conn = db();
+  const roll = conn.prepare(`
+    SELECT r.*, c.name as camera_name, c.id as camera_id
+    FROM rolls r JOIN cameras c ON r.camera_id=c.id
+    WHERE r.share_token=?
+  `).get(req.params.token);
+
+  if (!roll) { conn.close(); return res.status(404).render('share-404'); }
+
+  const photos = conn.prepare(
+    'SELECT * FROM photos WHERE roll_id=? AND hidden=0 ORDER BY filename'
+  ).all(roll.id).map(p => {
+    let file_size = 0;
+    try { file_size = fs.statSync(p.file_path).size; } catch {}
+    return { ...p, file_size };
+  });
+
+  conn.close();
+  res.render('share', { roll, photos, token: req.params.token });
+});
+
+app.get('/share/:token/thumb/:photoId', async (req, res) => {
+  const conn = db();
+  const roll = conn.prepare('SELECT id FROM rolls WHERE share_token=?').get(req.params.token);
+  if (!roll) { conn.close(); return res.status(404).end(); }
+  const row = conn.prepare('SELECT file_path FROM photos WHERE id=? AND roll_id=? AND hidden=0').get(req.params.photoId, roll.id);
+  conn.close();
+  if (!row) return res.status(404).end();
+
+  if (isVideoFile(row.file_path)) {
+    const tp = thumbFor(row.file_path);
+    if (!fs.existsSync(tp)) {
+      await new Promise(resolve => {
+        execFile(ffmpegPath, ['-i', row.file_path, '-ss', '00:00:01', '-vframes', '1', '-vf', 'scale=480:480:force_original_aspect_ratio=decrease', '-y', tp], resolve);
+      });
+    }
+    if (fs.existsSync(tp)) return streamFile(res, tp, 'image/jpeg', true);
+    res.setHeader('Content-Type', 'image/svg+xml');
+    return res.send(VIDEO_THUMB_SVG);
+  }
+
+  const tp = thumbFor(row.file_path);
+  if (!fs.existsSync(tp)) {
+    try {
+      await sharp(row.file_path).resize(480, 480, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 82 }).toFile(tp);
+    } catch {
+      return streamFile(res, row.file_path, mimeFor(row.file_path));
+    }
+  }
+  streamFile(res, tp, 'image/jpeg');
+});
+
+app.get('/share/:token/display/:photoId', async (req, res) => {
+  const conn = db();
+  const roll = conn.prepare('SELECT id FROM rolls WHERE share_token=?').get(req.params.token);
+  if (!roll) { conn.close(); return res.status(404).end(); }
+  const row = conn.prepare('SELECT id, file_path FROM photos WHERE id=? AND roll_id=? AND hidden=0').get(req.params.photoId, roll.id);
+  conn.close();
+  if (!row) return res.status(404).end();
+
+  if (isVideoFile(row.file_path)) {
+    const wp = webCachePath(row.id);
+    if (fs.existsSync(wp)) return streamMedia(req, res, wp, 'video/mp4');
+    return streamMedia(req, res, row.file_path, mimeFor(row.file_path));
+  }
+
+  const displayPath = path.join(THUMBS_DIR, 'display', `${row.id}.jpg`);
+  fs.mkdirSync(path.dirname(displayPath), { recursive: true });
+  if (!fs.existsSync(displayPath)) {
+    try {
+      await sharp(row.file_path)
+        .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
+        .withMetadata()
+        .jpeg({ quality: 88 })
+        .toFile(displayPath);
+    } catch {
+      return streamFile(res, row.file_path, mimeFor(row.file_path));
+    }
+  }
+  streamFile(res, displayPath, 'image/jpeg', true);
+});
+
+app.get('/share/:token/full/:photoId', (req, res) => {
+  const conn = db();
+  const roll = conn.prepare('SELECT id FROM rolls WHERE share_token=?').get(req.params.token);
+  if (!roll) { conn.close(); return res.status(404).end(); }
+  const row = conn.prepare('SELECT id, file_path, filename FROM photos WHERE id=? AND roll_id=? AND hidden=0').get(req.params.photoId, roll.id);
+  conn.close();
+  if (!row) return res.status(404).end();
+  const mime = mimeFor(row.file_path);
+  if (isVideoFile(row.file_path)) {
+    const wp = webCachePath(row.id);
+    if (fs.existsSync(wp)) return streamMedia(req, res, wp, 'video/mp4');
+    return streamMedia(req, res, row.file_path, mime);
+  }
+  streamFile(res, row.file_path, mime);
+});
+
+app.get('/share/:token/web-status/:photoId', (req, res) => {
+  const conn = db();
+  const roll = conn.prepare('SELECT id FROM rolls WHERE share_token=?').get(req.params.token);
+  if (!roll) { conn.close(); return res.status(404).end(); }
+  const row = conn.prepare('SELECT file_path FROM photos WHERE id=? AND roll_id=? AND hidden=0').get(req.params.photoId, roll.id);
+  conn.close();
+  if (!row) return res.status(404).end();
+
+  const id = Number(req.params.photoId);
+  const wp = webCachePath(id);
+  if (fs.existsSync(wp)) return res.json({ ready: true, transcoding: false });
+  if (transcodingJobs.has(id)) return res.json({ ready: false, transcoding: true });
+
+  transcodingJobs.add(id);
+  const tmpPath = wp + '.tmp.mp4';
+  execFile(ffmpegPath, [
+    '-i', row.file_path,
+    '-c:v', 'libx264', '-crf', '22', '-preset', 'ultrafast',
+    '-vf', 'scale=-2:min(ih\\,1080)',
+    '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac',
+    '-movflags', '+faststart',
+    '-y', tmpPath,
+  ], (err) => {
+    transcodingJobs.delete(id);
+    if (!err) { try { fs.renameSync(tmpPath, wp); } catch {} }
+    else { try { fs.unlinkSync(tmpPath); } catch {} }
+  });
+
+  res.json({ ready: false, transcoding: true });
+});
+
+// Single photo original download (share-scoped)
+app.get('/share/:token/original/:photoId', (req, res) => {
+  const conn = db();
+  const roll = conn.prepare('SELECT id FROM rolls WHERE share_token=?').get(req.params.token);
+  if (!roll) { conn.close(); return res.status(404).end(); }
+  const row = conn.prepare('SELECT file_path, filename FROM photos WHERE id=? AND roll_id=? AND hidden=0').get(req.params.photoId, roll.id);
+  conn.close();
+  if (!row) return res.status(404).end();
+  res.setHeader('Content-Disposition', `attachment; filename="${row.filename}"`);
+  streamFile(res, row.file_path, mimeFor(row.file_path));
+});
+
+app.get('/share/:token/download', (req, res) => {
+  const original = req.query.type === 'original';
+  const conn = db();
+  const roll = conn.prepare('SELECT * FROM rolls WHERE share_token=?').get(req.params.token);
+  if (!roll) { conn.close(); return res.status(404).end(); }
+
+  const photos = conn.prepare(
+    'SELECT id, file_path, filename FROM photos WHERE roll_id=? AND hidden=0 ORDER BY filename'
+  ).all(roll.id);
+  conn.close();
+
+  const parts = (roll.rel_path || '').split(/[/\\]/);
+  const rollName = (parts[parts.length - 1] || 'album').replace(/[^\w\s.\-]/g, '_');
+  const suffix = original ? '-original' : '-compressed';
+
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${rollName}${suffix}.zip"`);
+
+  const archive = new ZipArchive({ zlib: { level: 0 } });
+  archive.on('error', () => res.end());
+  archive.pipe(res);
+
+  for (const photo of photos) {
+    if (original) {
+      if (fs.existsSync(photo.file_path)) archive.file(photo.file_path, { name: photo.filename });
+    } else if (isVideoFile(photo.file_path)) {
+      const wp = webCachePath(photo.id);
+      const src = fs.existsSync(wp) ? wp : photo.file_path;
+      const name = fs.existsSync(wp) ? photo.filename.replace(/\.[^.]+$/, '.mp4') : photo.filename;
+      if (fs.existsSync(src)) archive.file(src, { name });
+    } else {
+      const dp = path.join(THUMBS_DIR, 'display', `${photo.id}.jpg`);
+      const src = fs.existsSync(dp) ? dp : photo.file_path;
+      const name = fs.existsSync(dp) ? photo.filename.replace(/\.[^.]+$/, '.jpg') : photo.filename;
+      if (fs.existsSync(src)) archive.file(src, { name });
+    }
+  }
+
+  archive.finalize();
 });
 
 app.get('/search', (req, res) => {
@@ -505,25 +956,197 @@ app.post('/api/photo/:id/hidden', (req, res) => {
   res.json({ hidden: !!val });
 });
 
+app.post('/api/photo/:id/rotate', async (req, res) => {
+  const { degrees } = req.body;
+  if (![90, -90, 180].includes(degrees)) return res.status(400).json({ error: 'Invalid degrees' });
+  const conn = db();
+  const row = conn.prepare('SELECT file_path FROM photos WHERE id=?').get(req.params.id);
+  conn.close();
+  if (!row) return res.status(404).end();
+  if (isVideoFile(row.file_path)) return res.status(400).json({ error: 'Cannot rotate video' });
+
+  const tmpPath = row.file_path + '.rot.tmp';
+  try {
+    await sharp(row.file_path)
+      .rotate(degrees)
+      .withMetadata()
+      .toFile(tmpPath);
+    fs.renameSync(tmpPath, row.file_path);
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath); } catch {}
+    return res.status(500).json({ error: err.message });
+  }
+
+  const id = Number(req.params.id);
+  const tp = thumbFor(row.file_path);
+  const dp = path.join(THUMBS_DIR, 'display', `${id}.jpg`);
+  try { if (fs.existsSync(tp)) fs.unlinkSync(tp); } catch {}
+  try { if (fs.existsSync(dp)) fs.unlinkSync(dp); } catch {}
+
+  res.json({ ok: true });
+});
+
+app.delete('/api/photo/:id/web-cache', (req, res) => {
+  const wc = webCachePath(Number(req.params.id));
+  try { if (fs.existsSync(wc)) fs.unlinkSync(wc); } catch {}
+  res.json({ ok: true });
+});
+
+app.post('/api/photo/:id/open-folder', (req, res) => {
+  const conn = db();
+  const row = conn.prepare('SELECT file_path FROM photos WHERE id=?').get(req.params.id);
+  conn.close();
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  const { exec } = require('child_process');
+  exec(`explorer /select,"${row.file_path}"`, () => {});
+  res.json({ ok: true });
+});
+
+app.get('/api/photo/:id/compress-progress', (req, res) => {
+  const p = compressProgress.get(Number(req.params.id));
+  res.json(p || null);
+});
+
+app.post('/api/photo/:id/compress', async (req, res) => {
+  const conn = db();
+  const row = conn.prepare('SELECT * FROM photos WHERE id=?').get(req.params.id);
+  conn.close();
+  if (!row) return res.status(404).end();
+  if (!isVideoFile(row.file_path)) return res.status(400).json({ error: 'Not a video' });
+
+  const newPath = row.file_path.replace(/\.[^.]+$/, '.mp4');
+  const tmpPath = newPath + '.tmp.mp4';
+
+  const totalSecs = await getDuration(row.file_path);
+  try {
+    await spawnFfmpeg([
+      '-i', row.file_path,
+      '-c:v', 'libx264', '-crf', '20', '-preset', 'medium',
+      '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac',
+      '-movflags', '+faststart',
+      '-y', tmpPath,
+    ], Number(req.params.id), totalSecs);
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath); } catch {}
+    return res.status(500).json({ error: err.message });
+  }
+
+  try {
+    if (row.file_path !== newPath) fs.unlinkSync(row.file_path);
+    else fs.unlinkSync(row.file_path);
+    fs.renameSync(tmpPath, newPath);
+  } catch (err) {
+    return res.status(500).json({ error: 'Could not replace file' });
+  }
+
+  const conn2 = db();
+  conn2.prepare('UPDATE photos SET file_path=?, filename=? WHERE id=?')
+       .run(newPath, path.basename(newPath), row.id);
+  conn2.close();
+
+  const oldThumb = thumbFor(row.file_path);
+  try { if (fs.existsSync(oldThumb)) fs.unlinkSync(oldThumb); } catch {}
+  const newThumb = thumbFor(newPath);
+  try { if (fs.existsSync(newThumb)) fs.unlinkSync(newThumb); } catch {}
+  const wc = webCachePath(Number(req.params.id));
+  try { if (fs.existsSync(wc)) fs.unlinkSync(wc); } catch {}
+
+  res.json({ ok: true });
+});
+
+app.post('/api/photo/:id/convert', async (req, res) => {
+  const conn = db();
+  const row = conn.prepare('SELECT * FROM photos WHERE id=?').get(req.params.id);
+  conn.close();
+  if (!row) return res.status(404).end();
+  if (!isVideoFile(row.file_path)) return res.status(400).json({ error: 'Not a video file' });
+
+  const ext = path.extname(row.file_path).toLowerCase();
+  if (ext === '.mp4') return res.json({ ok: true, already: true });
+
+  const mp4Path = row.file_path.replace(/\.[^.]+$/, '.mp4');
+  const mp4Name = path.basename(mp4Path);
+
+  try {
+    await new Promise((resolve, reject) => {
+      execFile(ffmpegPath, [
+        '-i', row.file_path,
+        '-c:v', 'libx264',
+        '-c:a', 'aac',
+        '-movflags', '+faststart',
+        '-y', mp4Path,
+      ], (err) => err ? reject(err) : resolve());
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+
+  const conn2 = db();
+  conn2.prepare('UPDATE photos SET file_path=?, filename=? WHERE id=?').run(mp4Path, mp4Name, row.id);
+  conn2.close();
+
+  const oldThumb = thumbFor(row.file_path);
+  try { if (fs.existsSync(oldThumb)) fs.unlinkSync(oldThumb); } catch {}
+
+  res.json({ ok: true });
+});
+
 app.delete('/api/photo/:id', (req, res) => {
   const conn = db();
   const row = conn.prepare('SELECT * FROM photos WHERE id=?').get(req.params.id);
   if (!row) { conn.close(); return res.status(404).end(); }
 
-  try {
-    if (fs.existsSync(row.file_path)) fs.unlinkSync(row.file_path);
-  } catch {
-    conn.close();
-    return res.status(500).json({ error: 'Could not delete file from disk' });
-  }
-
-  const tp = thumbFor(row.file_path);
-  if (fs.existsSync(tp)) try { fs.unlinkSync(tp); } catch {}
-
-  conn.prepare('DELETE FROM photo_tags WHERE photo_id=?').run(row.id);
-  conn.prepare('DELETE FROM photos WHERE id=?').run(row.id);
+  deletePhotoRow(conn, row);
   conn.close();
   res.json({ ok: true, rollId: row.roll_id });
+});
+
+app.get('/shares', (req, res) => {
+  const conn = db();
+  const shares = conn.prepare(`
+    SELECT r.id, r.rel_path, r.year, r.date_label, r.film_stock, r.share_token,
+           c.name as camera_name, COUNT(p.id) as photo_count
+    FROM rolls r
+    JOIN cameras c ON r.camera_id = c.id
+    LEFT JOIN photos p ON p.roll_id = r.id AND p.hidden = 0
+    WHERE r.share_token IS NOT NULL
+    GROUP BY r.id
+    ORDER BY r.year DESC, r.date_label DESC
+  `).all();
+  conn.close();
+  const siteUrl = process.env.SITE_URL || `${req.protocol}://${req.get('host')}`;
+  res.render('shares', { page: 'shares', shares, siteUrl });
+});
+
+app.post('/api/roll/:id/share', (req, res) => {
+  const conn = db();
+  const roll = conn.prepare('SELECT id, share_token FROM rolls WHERE id=?').get(req.params.id);
+  if (!roll) { conn.close(); return res.status(404).end(); }
+  let token = roll.share_token;
+  if (!token) {
+    token = crypto.randomBytes(20).toString('hex');
+    conn.prepare('UPDATE rolls SET share_token=? WHERE id=?').run(token, roll.id);
+  }
+  conn.close();
+  res.json({ token, path: `/share/${token}` });
+});
+
+app.delete('/api/roll/:id/share', (req, res) => {
+  const conn = db();
+  conn.prepare('UPDATE rolls SET share_token=NULL WHERE id=?').run(req.params.id);
+  conn.close();
+  res.json({ ok: true });
+});
+
+app.post('/api/roll/:id/hidden', (req, res) => {
+  const conn = db();
+  const row = conn.prepare('SELECT hidden FROM rolls WHERE id=?').get(req.params.id);
+  if (!row) { conn.close(); return res.status(404).end(); }
+  const val = row.hidden ? 0 : 1;
+  conn.prepare('UPDATE rolls SET hidden=? WHERE id=?').run(val, req.params.id);
+  conn.close();
+  res.json({ hidden: !!val });
 });
 
 app.post('/api/roll/:id/notes', (req, res) => {
@@ -540,6 +1163,15 @@ app.post('/api/roll/:id/film_stock', (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/api/film-stocks/merge', (req, res) => {
+  const { from, to } = req.body;
+  if (!from || !to) return res.status(400).json({ ok: false, error: 'from and to required' });
+  const conn = db();
+  const result = conn.prepare('UPDATE rolls SET film_stock=? WHERE film_stock=?').run(to, from);
+  conn.close();
+  res.json({ ok: true, count: result.changes });
+});
+
 app.post('/api/photos/bulk-action', (req, res) => {
   const { ids, action } = req.body;
   if (!Array.isArray(ids) || !ids.length) return res.json({ ok: true, count: 0 });
@@ -550,11 +1182,7 @@ app.post('/api/photos/bulk-action', (req, res) => {
     const rows = ids.map(id => conn.prepare('SELECT * FROM photos WHERE id=?').get(id)).filter(Boolean);
     conn.transaction(() => {
       for (const row of rows) {
-        try { if (fs.existsSync(row.file_path)) fs.unlinkSync(row.file_path); } catch {}
-        const tp = thumbFor(row.file_path);
-        try { if (fs.existsSync(tp)) fs.unlinkSync(tp); } catch {}
-        conn.prepare('DELETE FROM photo_tags WHERE photo_id=?').run(row.id);
-        conn.prepare('DELETE FROM photos WHERE id=?').run(row.id);
+        deletePhotoRow(conn, row);
       }
     })();
     conn.close();
@@ -595,11 +1223,7 @@ app.post('/api/rolls/bulk-action', (req, res) => {
       for (const id of ids) {
         const photos = conn.prepare('SELECT * FROM photos WHERE roll_id=?').all(id);
         for (const photo of photos) {
-          try { if (fs.existsSync(photo.file_path)) fs.unlinkSync(photo.file_path); } catch {}
-          const tp = thumbFor(photo.file_path);
-          try { if (fs.existsSync(tp)) fs.unlinkSync(tp); } catch {}
-          conn.prepare('DELETE FROM photo_tags WHERE photo_id=?').run(photo.id);
-          conn.prepare('DELETE FROM photos WHERE id=?').run(photo.id);
+          deletePhotoRow(conn, photo);
         }
         conn.prepare('DELETE FROM rolls WHERE id=?').run(id);
       }
@@ -620,11 +1244,7 @@ app.delete('/api/roll/:id', (req, res) => {
   const photos = conn.prepare('SELECT * FROM photos WHERE roll_id=?').all(roll.id);
   conn.transaction(() => {
     for (const photo of photos) {
-      try { if (fs.existsSync(photo.file_path)) fs.unlinkSync(photo.file_path); } catch {}
-      const tp = thumbFor(photo.file_path);
-      try { if (fs.existsSync(tp)) fs.unlinkSync(tp); } catch {}
-      conn.prepare('DELETE FROM photo_tags WHERE photo_id=?').run(photo.id);
-      conn.prepare('DELETE FROM photos WHERE id=?').run(photo.id);
+      deletePhotoRow(conn, photo);
     }
     conn.prepare('DELETE FROM rolls WHERE id=?').run(roll.id);
   })();
@@ -1111,6 +1731,77 @@ app.post('/api/person/:id/hijabi', async (req, res) => {
   res.json({ ok: true, hijabi: true, total: allPhotos.length, hidden: hiddenCount });
 });
 
+
+// ── Duplicate scanner ─────────────────────────────────────────────────────────
+
+let dupScanState = null; // null | { status, scanned, total, groups }
+
+function computeFileHash(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('md5');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', chunk => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', () => resolve(null));
+  });
+}
+
+app.get('/duplicates', (req, res) => {
+  res.render('duplicates', { page: 'duplicates', breadcrumbs: [] });
+});
+
+app.get('/api/duplicates/status', (req, res) => {
+  res.json(dupScanState || { status: 'idle' });
+});
+
+app.post('/api/duplicates/scan', async (req, res) => {
+  if (dupScanState && dupScanState.status === 'scanning') {
+    return res.json({ ok: false, error: 'Scan already running' });
+  }
+
+  dupScanState = { status: 'scanning', scanned: 0, total: 0, groups: [] };
+  res.json({ ok: true });
+
+  // Run in background
+  (async () => {
+    const conn = db();
+    const photos = conn.prepare(
+      'SELECT p.id, p.file_path, p.filename, r.rel_path, r.id as roll_id FROM photos p JOIN rolls r ON p.roll_id=r.id WHERE p.hidden=0'
+    ).all();
+    conn.close();
+
+    // Step 1: group by file size (fast, no hashing needed for different sizes)
+    const sizeGroups = new Map();
+    for (const p of photos) {
+      try {
+        const size = fs.statSync(p.file_path).size;
+        if (!sizeGroups.has(size)) sizeGroups.set(size, []);
+        sizeGroups.get(size).push(p);
+      } catch {}
+    }
+
+    // Only hash files that share a size with at least one other file
+    const candidates = [...sizeGroups.values()].filter(g => g.length > 1).flat();
+    dupScanState.total = candidates.length;
+
+    const hashGroups = new Map();
+    for (const p of candidates) {
+      const hash = await computeFileHash(p.file_path);
+      if (!hash) { dupScanState.scanned++; continue; }
+      if (!hashGroups.has(hash)) hashGroups.set(hash, []);
+      hashGroups.get(hash).push(p);
+      dupScanState.scanned++;
+    }
+
+    const groups = [...hashGroups.values()]
+      .filter(g => g.length > 1)
+      .map(g => g.map(p => ({ ...p, file_size: (() => { try { return fs.statSync(p.file_path).size; } catch { return 0; } })() })));
+
+    dupScanState = { status: 'done', scanned: candidates.length, total: candidates.length, groups, count: groups.length };
+  })().catch(err => {
+    dupScanState = { status: 'error', error: err.message };
+  });
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 

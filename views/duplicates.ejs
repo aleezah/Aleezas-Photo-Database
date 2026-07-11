@@ -1,0 +1,521 @@
+<%- include('partials/header', { title: 'Duplicate Scanner', page, breadcrumbs: [] }) %>
+
+<div class="dup-wrap">
+
+  <!-- Top bar -->
+  <div class="dup-topbar">
+    <div class="dup-topbar-left">
+      <span class="dup-topbar-title">Duplicate Scanner</span>
+      <span class="dup-topbar-status" id="top-status">Find and remove identical files from your library</span>
+    </div>
+    <div class="dup-topbar-right">
+      <button class="dup-btn-scan" id="scan-btn" onclick="startScan()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        SCAN FOR DUPLICATES
+      </button>
+    </div>
+  </div>
+
+  <!-- Progress bar (shown during scan) -->
+  <div class="dup-prog-outer" id="prog-outer" style="display:none">
+    <div class="dup-prog-inner" id="prog-inner"></div>
+  </div>
+  <div class="dup-prog-label" id="prog-label" style="display:none"></div>
+
+  <!-- Results area -->
+  <div id="dup-results" class="dup-results"></div>
+
+</div>
+
+<style>
+/* ── Reset for this page ── */
+.dup-wrap { font-family: inherit; background: #f0f2f5; min-height: 60vh; padding-bottom: 40px; }
+
+/* ── Top bar ── */
+.dup-topbar {
+  background: #1a3a5c;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 20px;
+  flex-wrap: wrap;
+}
+.dup-topbar-title {
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin-right: 14px;
+}
+.dup-topbar-status {
+  font-size: 0.82rem;
+  color: rgba(255,255,255,0.75);
+}
+.dup-topbar-right { display: flex; gap: 8px; align-items: center; }
+
+.dup-btn-scan {
+  display: inline-flex; align-items: center; gap: 7px;
+  background: #2e6da4; color: #fff;
+  border: none; border-radius: 4px;
+  padding: 8px 16px;
+  font-size: 0.78rem; font-weight: 700; letter-spacing: 0.05em;
+  cursor: pointer; transition: background 0.15s;
+  white-space: nowrap;
+}
+.dup-btn-scan:hover { background: #245a8c; }
+.dup-btn-scan:disabled { background: #5a7ea0; cursor: not-allowed; }
+
+/* ── Progress ── */
+.dup-prog-outer {
+  height: 4px; background: #d0d8e4;
+}
+.dup-prog-inner {
+  height: 100%; background: #2e6da4;
+  width: 0%; transition: width 0.35s ease;
+}
+.dup-prog-label {
+  background: #e8edf3;
+  padding: 6px 20px;
+  font-size: 0.78rem;
+  color: #4a5c6e;
+  border-bottom: 1px solid #d0d8e4;
+}
+
+/* ── Empty / no-results ── */
+.dup-empty {
+  text-align: center;
+  padding: 60px 24px;
+  color: #6b7c8d;
+  font-size: 0.95rem;
+}
+.dup-empty-icon { font-size: 2.8rem; margin-bottom: 12px; }
+.dup-empty strong { display: block; font-size: 1.1rem; color: #2d3e4e; margin-bottom: 6px; }
+
+/* ── Summary row ── */
+.dup-summary {
+  display: flex; align-items: center; gap: 0;
+  background: #fff;
+  border-bottom: 2px solid #d0d8e4;
+  padding: 10px 20px;
+  flex-wrap: wrap;
+  gap: 24px;
+}
+.dup-summary-stat { display: flex; flex-direction: column; }
+.dup-summary-num { font-size: 1.25rem; font-weight: 800; color: #1a3a5c; line-height: 1; }
+.dup-summary-lbl { font-size: 0.7rem; color: #6b7c8d; letter-spacing: 0.04em; text-transform: uppercase; margin-top: 2px; }
+
+/* ── Group sections ── */
+@keyframes dup-fadein {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.dup-group {
+  margin-bottom: 0; border-top: 1px solid #c8d2dc;
+  opacity: 0;
+  animation: dup-fadein 0.35s ease forwards;
+}
+
+.dup-group-bar {
+  background: #1a3a5c;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px;
+  flex-wrap: wrap;
+}
+.dup-group-title {
+  font-size: 0.85rem; font-weight: 700; letter-spacing: 0.02em;
+  display: flex; align-items: center; gap: 8px;
+}
+.dup-group-title svg { opacity: 0.7; }
+.dup-group-badge {
+  display: inline-block;
+  background: rgba(255,255,255,0.15);
+  border-radius: 3px;
+  padding: 1px 7px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.dup-group-actions { display: flex; gap: 8px; align-items: center; }
+
+.dup-btn-keep {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(255,255,255,0.15); color: #fff;
+  border: 1px solid rgba(255,255,255,0.3); border-radius: 3px;
+  padding: 5px 12px;
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em;
+  cursor: pointer; transition: background 0.15s;
+  white-space: nowrap;
+}
+.dup-btn-keep:hover { background: rgba(255,255,255,0.28); }
+
+.dup-btn-see-more {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: rgba(255,255,255,0.12); color: #fff;
+  border: 1px solid rgba(255,255,255,0.25); border-radius: 3px;
+  padding: 5px 10px;
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em;
+  cursor: pointer; transition: background 0.15s;
+}
+.dup-btn-see-more:hover { background: rgba(255,255,255,0.25); }
+
+/* ── Photo grid ── */
+.dup-grid {
+  background: #fff;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: #d0d8e4;
+}
+.dup-card {
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  cursor: pointer;
+  position: relative;
+  transition: box-shadow 0.15s;
+}
+.dup-card:hover { box-shadow: inset 0 0 0 2px #2e6da4; z-index: 1; }
+.dup-card.deleted { opacity: 0.3; pointer-events: none; }
+.dup-card.kept { box-shadow: inset 0 0 0 3px #27ae60; z-index: 1; }
+
+.dup-card-img-wrap {
+  position: relative;
+  aspect-ratio: 4/3;
+  overflow: hidden;
+  background: #e8ecf0;
+}
+.dup-card-img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.dup-card-play-icon {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 2rem; color: #fff;
+  pointer-events: none;
+  text-shadow: 0 2px 8px rgba(0,0,0,0.6);
+}
+.dup-card-del-btn {
+  position: absolute; top: 6px; right: 6px;
+  background: rgba(192,30,30,0.88); color: #fff;
+  border: none; border-radius: 3px;
+  padding: 3px 9px; font-size: 0.7rem; font-weight: 700;
+  cursor: pointer; letter-spacing: 0.03em;
+  opacity: 0; transition: opacity 0.15s;
+}
+.dup-card:hover .dup-card-del-btn { opacity: 1; }
+.dup-card-open-btn {
+  position: absolute; top: 6px; left: 6px;
+  background: rgba(0,0,0,0.55); color: #fff;
+  border: none; border-radius: 3px;
+  padding: 3px 7px; font-size: 0.68rem; font-weight: 600;
+  cursor: pointer;
+  opacity: 0; transition: opacity 0.15s;
+  text-decoration: none;
+}
+.dup-card:hover .dup-card-open-btn { opacity: 1; }
+
+.dup-card-foot {
+  padding: 7px 10px;
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 6px;
+  border-top: 1px solid #e8ecf0;
+  min-height: 52px;
+}
+.dup-card-info {
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 0; flex: 1;
+}
+.dup-card-name {
+  font-size: 0.75rem; font-weight: 600; color: #2d3e4e;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dup-card-path {
+  font-size: 0.65rem; color: #8a9bac;
+  word-break: break-all;
+  font-family: monospace;
+  line-height: 1.4;
+}
+.dup-card-folder-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: none; border: 1px solid #c8d2dc; border-radius: 3px;
+  color: #4a6a8a; font-size: 0.68rem; font-weight: 600;
+  padding: 2px 7px; cursor: pointer; margin-top: 4px;
+  transition: background 0.15s, color 0.15s;
+}
+.dup-card-folder-btn:hover { background: #e8edf3; color: #1a3a5c; }
+.dup-card-size {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: #2e6da4; color: #fff;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.68rem; font-weight: 700;
+  white-space: nowrap; flex-shrink: 0;
+}
+
+/* ── Show-more card ── */
+.dup-more-card {
+  background: #f0f4f8;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+  min-height: 160px;
+  border: none;
+  transition: background 0.15s;
+}
+.dup-more-card:hover { background: #e4eaf1; }
+.dup-more-plus {
+  font-size: 2.8rem;
+  color: #8a9bac;
+  line-height: 1;
+}
+.dup-more-label {
+  font-size: 0.72rem; font-weight: 700; color: #6b7c8d; letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 900px) {
+  .dup-grid { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 600px) {
+  .dup-grid { grid-template-columns: repeat(2, 1fr); }
+  .dup-topbar { padding: 10px 14px; }
+}
+</style>
+
+<script>
+let scanning = false;
+let allGroups = [];
+const PREVIEW_COUNT = 3; // photos shown before "+ SHOW MORE"
+
+async function startScan() {
+  if (scanning) return;
+  scanning = true;
+  const btn = document.getElementById('scan-btn');
+  btn.disabled = true;
+  btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg> SCANNING…`;
+  document.getElementById('prog-outer').style.display = 'block';
+  document.getElementById('prog-label').style.display = 'block';
+  document.getElementById('dup-results').innerHTML = '';
+  setStatus('Scanning…');
+  setProgress(0, 'Starting…');
+
+  await fetch('/api/duplicates/scan', { method: 'POST' });
+  pollProgress();
+}
+
+function setStatus(msg) {
+  document.getElementById('top-status').textContent = msg;
+}
+function setProgress(pct, label) {
+  document.getElementById('prog-inner').style.width = pct + '%';
+  document.getElementById('prog-label').textContent = label;
+}
+
+async function pollProgress() {
+  const r = await fetch('/api/duplicates/status');
+  const d = await r.json();
+
+  if (d.status === 'scanning') {
+    const pct = d.total > 0 ? Math.round((d.scanned / d.total) * 100) : 2;
+    setProgress(pct, `Hashing files… ${d.scanned.toLocaleString()} / ${d.total.toLocaleString()}`);
+    setStatus(`Scanning… ${pct}%`);
+    setTimeout(pollProgress, 700);
+    return;
+  }
+  if (d.status === 'error') {
+    setProgress(0, 'Error: ' + d.error);
+    setStatus('Scan failed');
+    scanning = false;
+    resetBtn();
+    return;
+  }
+  if (d.status === 'done') {
+    setProgress(100, `Checked ${d.scanned.toLocaleString()} files · ${d.count} duplicate group${d.count !== 1 ? 's' : ''} found`);
+    const waste = d.groups.reduce((s, g) => s + g[0].file_size * (g.length - 1), 0);
+    setStatus(`${d.count} group${d.count !== 1 ? 's' : ''} · ${fmtSize(waste)} reclaimable`);
+    scanning = false;
+    resetBtn();
+    allGroups = d.groups;
+    showResults(d.groups);
+  }
+}
+
+function resetBtn() {
+  const btn = document.getElementById('scan-btn');
+  btn.disabled = false;
+  btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg> RE-SCAN`;
+}
+
+function fmtSize(bytes) {
+  if (!bytes) return '—';
+  if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + 'GB';
+  if (bytes >= 1e6) return (bytes / 1e6).toFixed(1) + 'MB';
+  if (bytes >= 1e3) return Math.round(bytes / 1e3) + 'KB';
+  return bytes + 'B';
+}
+
+function showResults(groups) {
+  const el = document.getElementById('dup-results');
+
+  if (!groups.length) {
+    el.innerHTML = `<div class="dup-empty">
+      <div class="dup-empty-icon">✓</div>
+      <strong>No duplicates found</strong>
+      Every file in your library is unique.
+    </div>`;
+    return;
+  }
+
+  const totalExtras = groups.reduce((s, g) => s + g.length - 1, 0);
+  const totalWaste  = groups.reduce((s, g) => s + g[0].file_size * (g.length - 1), 0);
+
+  // Summary bar renders immediately
+  el.innerHTML = `<div class="dup-summary">
+    <div class="dup-summary-stat"><span class="dup-summary-num">${groups.length}</span><span class="dup-summary-lbl">Groups</span></div>
+    <div class="dup-summary-stat"><span class="dup-summary-num">${totalExtras}</span><span class="dup-summary-lbl">Extra Copies</span></div>
+    <div class="dup-summary-stat"><span class="dup-summary-num">${fmtSize(totalWaste)}</span><span class="dup-summary-lbl">Reclaimable</span></div>
+  </div>`;
+
+  // Groups load in one by one with a staggered delay
+  groups.forEach((g, gi) => {
+    setTimeout(() => {
+      const hasMore = g.length > PREVIEW_COUNT;
+      const extraCount = g.length - PREVIEW_COUNT;
+      const div = document.createElement('div');
+      div.style.animationDelay = '0ms'; // already staggered by setTimeout
+      div.outerHTML; // force reflow before appending so animation triggers
+      let html = `<div class="dup-group" id="group-${gi}">
+      <div class="dup-group-bar">
+        <div class="dup-group-title">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          ${escHtml(g[0].filename)}
+          <span class="dup-group-badge">${g.length} copies · ${fmtSize(g[0].file_size)} each</span>
+        </div>
+        <div class="dup-group-actions">
+          <button class="dup-btn-keep" onclick="keepFirst(${gi})">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+            KEEP FIRST, DELETE REST
+          </button>
+          ${hasMore ? `<button class="dup-btn-see-more" onclick="expandGroup(${gi})">SEE MORE ▾</button>` : ''}
+        </div>
+      </div>
+      <div class="dup-grid" id="group-grid-${gi}">`;
+
+      for (let pi = 0; pi < Math.min(g.length, PREVIEW_COUNT); pi++) {
+        html += photoCard(gi, pi, g[pi]);
+      }
+
+      if (hasMore) {
+        html += `<button class="dup-more-card" id="more-card-${gi}" onclick="expandGroup(${gi})">
+          <div class="dup-more-plus">+</div>
+          <div class="dup-more-label">Show ${extraCount} more</div>
+        </button>`;
+      }
+
+      html += `</div></div>`;
+      el.insertAdjacentHTML('beforeend', html);
+    }, gi * 80); // 80ms stagger between each group
+  });
+}
+
+function photoCard(gi, pi, p) {
+  const isVid = /\.(mp4|mov|avi|mkv|m4v|webm)$/i.test(p.file_path || '');
+  return `<div class="dup-card" id="dup-${gi}-${pi}">
+    <div class="dup-card-img-wrap">
+      <img class="dup-card-img" src="/thumb/${p.id}" loading="lazy" alt="">
+      ${isVid ? `<div class="dup-card-play-icon">&#9654;</div>` : ''}
+      <a class="dup-card-open-btn" href="/photo/${p.id}" target="_blank">VIEW</a>
+      <button class="dup-card-del-btn" onclick="deletePhoto(event,${gi},${pi},${p.id})">DELETE</button>
+    </div>
+    <div class="dup-card-foot">
+      <div class="dup-card-info">
+        <span class="dup-card-name">${escHtml(p.filename)}</span>
+        <span class="dup-card-path" title="${escHtml(p.file_path)}">${escHtml(p.file_path)}</span>
+        <button class="dup-card-folder-btn" onclick="openFolder(event,${p.id})">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          Open folder
+        </button>
+      </div>
+      <span class="dup-card-size">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+        ${fmtSize(p.file_size)}
+      </span>
+    </div>
+  </div>`;
+}
+
+function expandGroup(gi) {
+  const g = allGroups[gi];
+  const grid = document.getElementById(`group-grid-${gi}`);
+  const moreCard = document.getElementById(`more-card-${gi}`);
+  if (moreCard) moreCard.remove();
+  // Remove see-more button
+  const seeMoreBtn = grid.closest('.dup-group').querySelector('.dup-btn-see-more');
+  if (seeMoreBtn) seeMoreBtn.remove();
+  // Add remaining cards
+  for (let pi = PREVIEW_COUNT; pi < g.length; pi++) {
+    const existing = document.getElementById(`dup-${gi}-${pi}`);
+    if (!existing) grid.insertAdjacentHTML('beforeend', photoCard(gi, pi, g[pi]));
+  }
+}
+
+async function deletePhoto(e, gi, pi, photoId) {
+  e.stopPropagation();
+  if (!confirm('Delete this photo permanently?')) return;
+  const r = await fetch(`/api/photo/${photoId}`, { method: 'DELETE' });
+  if (!r.ok) { alert('Failed to delete'); return; }
+  const card = document.getElementById(`dup-${gi}-${pi}`);
+  card.classList.add('deleted');
+  checkGroupResolved(gi);
+}
+
+async function keepFirst(gi) {
+  const g = allGroups[gi];
+  if (!confirm(`Keep the first copy and delete the other ${g.length - 1}?`)) return;
+  const grid = document.getElementById(`group-grid-${gi}`);
+  expandGroup(gi); // make sure all cards are rendered
+  const cards = grid.querySelectorAll('.dup-card:not(.deleted)');
+  let first = true;
+  for (const card of cards) {
+    if (first) { first = false; card.classList.add('kept'); continue; }
+    const delBtn = card.querySelector('.dup-card-del-btn');
+    if (!delBtn) continue;
+    const m = delBtn.getAttribute('onclick').match(/(\d+)\)$/);
+    if (!m) continue;
+    const photoId = m[1];
+    const r = await fetch(`/api/photo/${photoId}`, { method: 'DELETE' });
+    if (r.ok) card.classList.add('deleted');
+  }
+  checkGroupResolved(gi);
+}
+
+function checkGroupResolved(gi) {
+  const grid = document.getElementById(`group-grid-${gi}`);
+  const alive = grid.querySelectorAll('.dup-card:not(.deleted)');
+  if (alive.length <= 1) {
+    alive.forEach(c => c.classList.add('kept'));
+    const bar = document.getElementById(`group-${gi}`).querySelector('.dup-group-bar');
+    bar.style.background = '#27613a';
+  }
+}
+
+async function openFolder(e, photoId) {
+  e.stopPropagation();
+  await fetch(`/api/photo/${photoId}/open-folder`, { method: 'POST' });
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+
+<%- include('partials/footer') %>

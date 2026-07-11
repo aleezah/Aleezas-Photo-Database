@@ -1,0 +1,130 @@
+<%- include('partials/header', { title: 'Shared Albums', page, breadcrumbs: [], favs: false }) %>
+
+<div class="shares-page">
+  <div class="shares-header">
+    <h1>Shared Albums</h1>
+    <span class="shares-count"><%= shares.length %> active</span>
+  </div>
+
+  <% if (!shares.length) { %>
+  <div class="shares-empty">
+    <div class="shares-empty-icon">&#128279;</div>
+    <p>No albums are currently shared.</p>
+    <p class="shares-empty-sub">Open any album and click Share to create a link.</p>
+  </div>
+  <% } else { %>
+  <div class="shares-grid">
+    <% for (const s of shares) { %>
+    <div class="share-card" id="share-row-<%= s.id %>">
+      <div class="share-card-top">
+        <a class="share-card-title" href="/roll/<%= s.id %>"><%= rollLeaf(s.rel_path) %></a>
+        <div class="share-card-meta">
+          <% if (s.year) { %><span><%= s.year %></span><% } %>
+          <% if (s.film_stock) { %><span><%= s.film_stock %></span><% } %>
+          <span><%= s.photo_count %> photos</span>
+        </div>
+      </div>
+      <div class="share-card-link">
+        <input type="text" readonly id="url-<%= s.id %>"
+               value="<%= siteUrl %>/share/<%= s.share_token %>">
+      </div>
+      <div class="share-card-actions">
+        <button class="btn-secondary btn-sm" onclick="copyLink('<%= s.id %>', event)">Copy link</button>
+        <a class="btn-secondary btn-sm" href="/share/<%= s.share_token %>" target="_blank">Preview</a>
+        <button class="btn-danger-sm" onclick="revoke(<%= s.id %>)">Revoke</button>
+      </div>
+    </div>
+    <% } %>
+  </div>
+  <% } %>
+</div>
+
+<style>
+.shares-page { max-width: 900px; margin: 0 auto; padding: 32px 24px; }
+
+.shares-header {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 24px;
+}
+.shares-header h1 { font-size: 1.4rem; font-weight: 700; }
+.shares-count {
+  background: var(--gold); color: #000;
+  font-size: 0.75rem; font-weight: 700;
+  padding: 2px 10px; border-radius: 999px;
+  letter-spacing: 0.03em;
+}
+
+.shares-empty {
+  text-align: center; padding: 60px 24px;
+  color: var(--muted);
+}
+.shares-empty-icon { font-size: 2.5rem; margin-bottom: 12px; }
+.shares-empty p { font-size: 1rem; }
+.shares-empty-sub { font-size: 0.85rem; margin-top: 6px; }
+
+.shares-grid { display: flex; flex-direction: column; gap: 12px; }
+
+.share-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: opacity 0.3s;
+}
+
+.share-card-title {
+  font-weight: 700; font-size: 1rem;
+  display: block; margin-bottom: 4px;
+}
+.share-card-title:hover { text-decoration: underline; }
+
+.share-card-meta {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  font-size: 0.8rem; color: var(--muted);
+}
+.share-card-meta span::before { content: '·'; margin-right: 8px; }
+.share-card-meta span:first-child::before { content: none; }
+
+.share-card-link input {
+  width: 100%;
+  padding: 7px 10px;
+  font-size: 0.82rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  color: var(--muted);
+  font-family: monospace;
+}
+
+.share-card-actions {
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+
+@media (max-width: 480px) {
+  .shares-page { padding: 20px 16px; }
+  .share-card-actions { flex-direction: column; }
+  .share-card-actions a, .share-card-actions button { width: 100%; text-align: center; }
+}
+</style>
+
+<script>
+async function copyLink(id, e) {
+  const input = document.getElementById('url-' + id);
+  await navigator.clipboard.writeText(input.value);
+  const btn = e.target;
+  btn.textContent = 'Copied ✓';
+  setTimeout(() => btn.textContent = 'Copy link', 2000);
+}
+
+async function revoke(id) {
+  if (!confirm('Revoke this share link? Anyone with the link will lose access.')) return;
+  await fetch(`/api/roll/${id}/share`, { method: 'DELETE' });
+  const card = document.getElementById('share-row-' + id);
+  card.style.opacity = '0';
+  setTimeout(() => card.remove(), 300);
+}
+</script>
+
+<%- include('partials/footer') %>

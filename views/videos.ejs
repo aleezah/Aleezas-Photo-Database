@@ -1,0 +1,95 @@
+<%- include('partials/header', { title: 'Videos', page, breadcrumbs: [], favs: false }) %>
+
+<div class="page-header">
+  <h1>Videos</h1>
+  <p class="subtitle"><%= rolls.length %> folder<%= rolls.length !== 1 ? 's' : '' %></p>
+</div>
+
+<div class="filter-bar">
+  <% if (years.length > 1) { %>
+  <div class="filter-group">
+    <span class="filter-label">Year</span>
+    <div class="filter-pills">
+      <a class="year-btn <%= !filterYear ? 'active' : '' %>"
+         href="/videos<%= filterCamera ? '?camera='+filterCamera : '' %>">All</a>
+      <% for (const y of years) { %>
+      <a class="year-btn <%= filterYear === y ? 'active' : '' %>"
+         href="/videos?year=<%= y %><%= filterCamera ? '&camera='+filterCamera : '' %>"><%= y %></a>
+      <% } %>
+    </div>
+  </div>
+  <% } %>
+
+  <% if (cameras.length > 1) { %>
+  <div class="filter-group">
+    <span class="filter-label">Folder</span>
+    <div class="filter-pills">
+      <a class="year-btn <%= !filterCamera ? 'active' : '' %>"
+         href="/videos<%= filterYear ? '?year='+filterYear : '' %>">All</a>
+      <% for (const c of cameras) { %>
+      <a class="year-btn <%= filterCamera === String(c.id) ? 'active' : '' %>"
+         href="/videos?camera=<%= c.id %><%= filterYear ? '&year='+filterYear : '' %>"><%= c.name %></a>
+      <% } %>
+    </div>
+  </div>
+  <% } %>
+</div>
+
+<%
+const visible = rolls.filter(r =>
+  (!filterYear   || r.year === filterYear) &&
+  (!filterCamera || String(r.camera_id) === filterCamera)
+);
+%>
+
+<% if (!visible.length) { %>
+<p class="empty-state">No video folders found. Add videos under <code>Video/</code> in your photo database and run <code>npm run scan</code>.</p>
+<% } %>
+
+<div class="roll-grid">
+  <% for (const r of visible) { %>
+  <div class="roll-card-wrap" data-roll-id="<%= r.id %>">
+    <a class="roll-card" href="/roll/<%= r.id %>">
+      <% if (r.preview_id) { %>
+      <div class="roll-thumb roll-thumb--video">
+        <img src="/thumb/<%= r.preview_id %>" alt="" loading="lazy">
+      </div>
+      <% } else { %>
+      <div class="roll-thumb roll-thumb--empty roll-thumb--video-empty"></div>
+      <% } %>
+      <div class="roll-info">
+        <div class="roll-camera"><%= r.camera_name.replace(/^Video \/ /, '') %></div>
+        <div class="roll-date"><%= rollLabel(r.rel_path) || r.camera_name.replace(/^Video \/ /, '') %></div>
+        <% if (r.year || r.date_label) { %>
+        <div class="roll-count"><%= r.date_label || r.year %></div>
+        <% } %>
+        <div class="roll-count"><%= r.video_count %> clip<%= r.video_count !== 1 ? 's' : '' %></div>
+        <% if (r.notes) { %>
+        <div class="roll-notes-preview"><%= r.notes.slice(0, 60) %><%= r.notes.length > 60 ? '…' : '' %></div>
+        <% } %>
+      </div>
+    </a>
+    <div class="roll-card-actions">
+      <button class="roll-card-hide-btn" onclick="toggleFolderHide(event, <%= r.id %>, this)">&#128274; Hide</button>
+    </div>
+  </div>
+  <% } %>
+</div>
+
+<script>
+async function toggleFolderHide(e, id, btn) {
+  e.preventDefault();
+  const r = await fetch(`/api/roll/${id}/hidden`, { method: 'POST' });
+  const d = await r.json();
+  const wrap = btn.closest('.roll-card-wrap');
+  if (d.hidden) {
+    wrap.classList.add('roll-card-wrap--hidden');
+    btn.innerHTML = '&#128065; Unhide';
+  } else {
+    wrap.classList.remove('roll-card-wrap--hidden');
+    btn.innerHTML = '&#128274; Hide';
+  }
+}
+</script>
+
+<%- include('partials/footer') %>

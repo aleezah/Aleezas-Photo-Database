@@ -20,9 +20,24 @@ const breadcrumbs = [
   </div>
   <div class="roll-header-actions">
     <a class="btn-secondary" href="/api/roll/<%= roll.id %>/download">&#8681; Download</a>
+    <button class="btn-secondary" id="share-btn" onclick="toggleShare()">&#128279; Share</button>
     <button class="btn-secondary" id="select-btn" onclick="toggleSelectMode()">Select</button>
     <button class="btn-secondary" onclick="toggleEdit()">Edit details</button>
     <button class="btn-danger-sm" onclick="deleteRoll()">Delete roll</button>
+  </div>
+</div>
+
+<div class="roll-edit-panel" id="share-panel" style="display:none">
+  <div id="share-loading" style="color:var(--muted);font-size:0.9rem">Generating link…</div>
+  <div id="share-content" style="display:none">
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+      <input id="share-url" type="text" readonly style="flex:1;font-size:0.85rem;background:var(--bg)">
+      <button class="btn-primary btn-sm" onclick="copyShareLink()">Copy</button>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;justify-content:space-between">
+      <span id="share-copied" style="font-size:0.82rem;color:var(--gold)"></span>
+      <button class="btn-danger-sm" onclick="revokeShare()">Revoke link</button>
+    </div>
   </div>
 </div>
 
@@ -152,6 +167,35 @@ async function deleteRoll() {
   const r = await fetch(`/api/roll/${ROLL_ID}`, { method: 'DELETE' });
   const d = await r.json();
   if (d.ok) window.location.href = `/camera/${d.cameraId}`;
+}
+
+async function toggleShare() {
+  const panel = document.getElementById('share-panel');
+  if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  document.getElementById('share-loading').style.display = '';
+  document.getElementById('share-content').style.display = 'none';
+
+  const r = await fetch(`/api/roll/${ROLL_ID}/share`, { method: 'POST' });
+  const d = await r.json();
+  const url = `${location.origin}${d.path}`;
+  document.getElementById('share-url').value = url;
+  document.getElementById('share-loading').style.display = 'none';
+  document.getElementById('share-content').style.display = '';
+}
+
+async function copyShareLink() {
+  const url = document.getElementById('share-url').value;
+  await navigator.clipboard.writeText(url);
+  const el = document.getElementById('share-copied');
+  el.textContent = 'Copied ✓';
+  setTimeout(() => el.textContent = '', 2000);
+}
+
+async function revokeShare() {
+  if (!confirm('Revoke this share link? Anyone with the link will lose access.')) return;
+  await fetch(`/api/roll/${ROLL_ID}/share`, { method: 'DELETE' });
+  document.getElementById('share-panel').style.display = 'none';
 }
 
 function toggleEdit() {

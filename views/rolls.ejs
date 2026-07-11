@@ -6,6 +6,50 @@
   <button class="btn-select-mode" id="select-toggle" onclick="toggleSelectMode()">Select</button>
 </div>
 
+<div class="tab-bar">
+  <a class="tab-btn <%= tab === 'all' ? 'active' : '' %>" href="/rolls?tab=all">All</a>
+  <a class="tab-btn <%= tab === 'nostock' ? 'active' : '' %>" href="/rolls?tab=nostock">
+    No Film Stock
+    <% const noStockCount = rolls.filter(r => !r.film_stock).length; %>
+    <% if (noStockCount) { %><span class="tab-badge"><%= noStockCount %></span><% } %>
+  </a>
+  <button class="tab-btn" onclick="openMergePanel()">Merge Stock Names</button>
+</div>
+
+<!-- Merge panel -->
+<div id="merge-panel" style="display:none" class="merge-panel">
+  <div class="merge-panel-header">
+    <strong>Merge Film Stock Names</strong>
+    <button class="merge-close" onclick="closeMergePanel()">&#10005;</button>
+  </div>
+  <p class="merge-hint">Rename one stock to match another — all rolls using the old name will be updated.</p>
+  <div class="merge-row">
+    <div class="merge-field">
+      <label>From</label>
+      <select id="merge-from" class="merge-select">
+        <option value="">Select stock…</option>
+        <% for (const s of filmStocks) { %><option value="<%= s %>"><%= s %></option><% } %>
+      </select>
+    </div>
+    <div class="merge-arrow">→</div>
+    <div class="merge-field">
+      <label>To</label>
+      <select id="merge-to" class="merge-select">
+        <option value="">Select stock…</option>
+        <% for (const s of filmStocks) { %><option value="<%= s %>"><%= s %></option><% } %>
+      </select>
+      <input id="merge-to-custom" class="merge-select" placeholder="Or type a new name…" style="display:none;margin-top:6px">
+    </div>
+  </div>
+  <div class="merge-actions">
+    <label class="merge-custom-label">
+      <input type="checkbox" id="merge-custom-check" onchange="toggleCustom()"> Use custom name
+    </label>
+    <button class="btn-primary btn-sm" onclick="doMerge()">Apply</button>
+  </div>
+  <div id="merge-result" class="merge-result" style="display:none"></div>
+</div>
+
 <div class="bulk-bar" id="bulk-bar" style="display:none">
   <span class="bulk-count" id="bulk-count">0 selected</span>
   <button class="bulk-btn" onclick="bulkAction('hide')">&#128274; Hide all photos</button>
@@ -47,7 +91,8 @@
 <%
 const visible = rolls.filter(r =>
   (!filterYear   || r.year === filterYear) &&
-  (!filterCamera || String(r.camera_id) === filterCamera)
+  (!filterCamera || String(r.camera_id) === filterCamera) &&
+  (tab !== 'nostock' || !r.film_stock)
 );
 %>
 
@@ -75,11 +120,123 @@ const visible = rolls.filter(r =>
         <% if (r.notes) { %>
         <div class="roll-notes-preview"><%= r.notes.slice(0, 60) %><%= r.notes.length > 60 ? '…' : '' %></div>
         <% } %>
+        <% if (tab === 'nostock' && !r.film_stock) { %>
+        <div class="roll-setstock" onclick="event.preventDefault(); event.stopPropagation()">
+          <select class="roll-stock-input" id="stock-select-<%= r.id %>" onchange="onStockSelect(<%= r.id %>)">
+            <option value="">Set film stock…</option>
+            <% for (const s of filmStocks) { %><option value="<%= s %>"><%= s %></option><% } %>
+            <option value="__new__">+ New name…</option>
+          </select>
+          <input class="roll-stock-input" id="stock-input-<%= r.id %>" placeholder="Type new stock name…"
+                 style="display:none;margin-top:4px" autocomplete="off">
+          <button class="roll-stock-save" onclick="saveStock(<%= r.id %>)">Save</button>
+        </div>
+        <% } %>
       </div>
     </a>
   </div>
   <% } %>
 </div>
+
+<style>
+.tab-bar {
+  display: flex; gap: 4px;
+  padding: 0 0 16px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+.tab-btn {
+  padding: 6px 16px;
+  border-radius: var(--radius);
+  font-size: 0.85rem; font-weight: 600;
+  color: var(--muted);
+  display: inline-flex; align-items: center; gap: 6px;
+  transition: background 0.15s, color 0.15s;
+}
+.tab-btn:hover { background: var(--surface); color: var(--text); }
+.tab-btn.active { background: var(--gold); color: #000; }
+.tab-badge {
+  background: rgba(0,0,0,0.2);
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.tab-btn.active .tab-badge { background: rgba(0,0,0,0.25); }
+
+.roll-setstock {
+  display: flex; gap: 6px; align-items: center;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.roll-stock-input {
+  flex: 1; min-width: 0;
+  padding: 5px 8px;
+  font-size: 0.78rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  color: var(--text);
+  font-family: inherit;
+}
+.roll-stock-input:focus { outline: none; border-color: var(--gold); }
+.roll-stock-save {
+  padding: 5px 10px;
+  font-size: 0.75rem; font-weight: 700;
+  background: var(--gold); color: #000;
+  border: none; border-radius: calc(var(--radius) - 2px);
+  cursor: pointer; white-space: nowrap;
+  transition: opacity 0.15s;
+}
+.roll-stock-save:hover { opacity: 0.85; }
+
+/* ── Merge panel ── */
+.merge-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 20px;
+}
+.merge-panel-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.merge-close {
+  background: none; border: none; cursor: pointer;
+  color: var(--muted); font-size: 1rem; padding: 2px 6px;
+}
+.merge-close:hover { color: var(--text); }
+.merge-hint { font-size: 0.82rem; color: var(--muted); margin-bottom: 16px; }
+.merge-row {
+  display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.merge-field { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 160px; }
+.merge-field label { font-size: 0.75rem; font-weight: 600; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+.merge-select {
+  padding: 7px 10px;
+  font-size: 0.85rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  color: var(--text);
+  font-family: inherit;
+  width: 100%;
+}
+.merge-select:focus { outline: none; border-color: var(--gold); }
+.merge-arrow { font-size: 1.2rem; color: var(--muted); padding-bottom: 8px; }
+.merge-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.merge-custom-label { font-size: 0.82rem; color: var(--muted); display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.merge-result {
+  margin-top: 12px; padding: 10px 14px;
+  border-radius: calc(var(--radius) - 2px);
+  font-size: 0.85rem;
+}
+.merge-result.ok { background: color-mix(in srgb, var(--gold) 15%, transparent); color: var(--text); }
+.merge-result.err { background: #fee; color: #c00; }
+</style>
 
 <script>
 let selectMode = false;
@@ -110,6 +267,72 @@ function handleCardClick(e, a) {
 
 function updateCount() {
   document.getElementById('bulk-count').textContent = selected.size + ' selected';
+}
+
+function openMergePanel() {
+  document.getElementById('merge-panel').style.display = 'block';
+  document.getElementById('merge-result').style.display = 'none';
+}
+function closeMergePanel() {
+  document.getElementById('merge-panel').style.display = 'none';
+}
+function toggleCustom() {
+  const custom = document.getElementById('merge-custom-check').checked;
+  document.getElementById('merge-to').style.display = custom ? 'none' : '';
+  document.getElementById('merge-to-custom').style.display = custom ? '' : 'none';
+}
+async function doMerge() {
+  const from = document.getElementById('merge-from').value.trim();
+  const custom = document.getElementById('merge-custom-check').checked;
+  const to = custom
+    ? document.getElementById('merge-to-custom').value.trim()
+    : document.getElementById('merge-to').value.trim();
+  const result = document.getElementById('merge-result');
+  if (!from || !to) { result.className = 'merge-result err'; result.style.display = 'block'; result.textContent = 'Select both a "From" and "To" stock.'; return; }
+  if (from === to) { result.className = 'merge-result err'; result.style.display = 'block'; result.textContent = 'From and To are the same.'; return; }
+  const r = await fetch('/api/film-stocks/merge', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from, to }),
+  });
+  const d = await r.json();
+  result.style.display = 'block';
+  if (d.ok) {
+    result.className = 'merge-result ok';
+    result.textContent = `Updated ${d.count} roll${d.count !== 1 ? 's' : ''} from "${from}" → "${to}". Reload to see changes.`;
+  } else {
+    result.className = 'merge-result err';
+    result.textContent = d.error || 'Failed';
+  }
+}
+
+function onStockSelect(rollId) {
+  const sel = document.getElementById('stock-select-' + rollId);
+  const input = document.getElementById('stock-input-' + rollId);
+  if (sel.value === '__new__') {
+    input.style.display = '';
+    input.focus();
+  } else {
+    input.style.display = 'none';
+  }
+}
+
+async function saveStock(rollId) {
+  const sel = document.getElementById('stock-select-' + rollId);
+  const input = document.getElementById('stock-input-' + rollId);
+  const stock = sel.value === '__new__' ? input.value.trim() : sel.value.trim();
+  if (!stock) { input.focus(); return; }
+  const r = await fetch(`/api/roll/${rollId}/film_stock`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ film_stock: stock }),
+  });
+  if (r.ok) {
+    const wrap = input.closest('.roll-card-wrap');
+    wrap.style.transition = 'opacity 0.3s';
+    wrap.style.opacity = '0';
+    setTimeout(() => wrap.remove(), 300);
+  } else {
+    alert('Failed to save');
+  }
 }
 
 async function bulkAction(action) {

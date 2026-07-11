@@ -4,7 +4,7 @@ const fs = require('fs');
 
 const PHOTOS_DIR = 'C:\\Users\\aleez\\Desktop\\Photos\\Aleezas Photo Database';
 const DB_PATH = path.join(__dirname, 'film.db');
-const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.tif', '.tiff']);
+const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.tif', '.tiff', '.mp4', '.mov', '.avi', '.mkv', '.m4v', '.webm']);
 
 const MONTH_NAMES = [
   'january','february','march','april','may','june',
