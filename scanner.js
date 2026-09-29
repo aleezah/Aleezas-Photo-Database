@@ -1,6 +1,7 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
+const { pruneMissing } = require('./pruneMissing');
 
 const PHOTOS_DIR = 'C:\\Users\\aleez\\Desktop\\Photos\\Aleezas Photo Database';
 const DB_PATH = path.join(__dirname, 'film.db');
@@ -61,10 +62,14 @@ function parseRollMetadata(parts) {
   let year = null, dateLabel = null, filmStock = null;
   for (const part of parts) {
     const p = part.toLowerCase().trim();
+    const isoInParens = part.match(/\((\d{4})-\d{2}-\d{2}\b/);
     if (/^\d{4}$/.test(part) && +part >= 1990 && +part <= 2099) {
       year = part;
     } else if (/^\d{4}-\d{2}-\d{2}$/.test(part)) {
       year = year || part.slice(0, 4);
+      dateLabel = dateLabel || part;
+    } else if (isoInParens) {
+      year = year || isoInParens[1];
       dateLabel = dateLabel || part;
     } else if (MONTH_NAMES.some(m => p.includes(m))) {
       dateLabel = dateLabel || part;
@@ -167,8 +172,17 @@ function scan() {
     console.log(`  ${camera.name}: ${images.length} photos in ${rollFolders.size} rolls`);
   }
 
-  db.close();
   console.log(`\nScan complete — ${newRolls} new rolls, ${newPhotos} new photos indexed.`);
+
+  const force = process.argv.includes('--force-prune');
+  const result = pruneMissing(db, __dirname, { force });
+  if (result.aborted) {
+    console.log(`\nSkipped cleanup: ${result.reason}`);
+  } else if (result.removedPhotos || result.removedRolls || result.removedCameras) {
+    console.log(`Cleaned up ${result.removedPhotos} missing photo(s), ${result.removedRolls} empty/missing roll(s), ${result.removedCameras} empty camera(s).`);
+  }
+
+  db.close();
 }
 
 console.log(`Scanning ${PHOTOS_DIR} ...\n`);

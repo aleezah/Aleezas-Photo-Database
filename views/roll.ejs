@@ -11,7 +11,10 @@ const breadcrumbs = [
   <div class="roll-header-info">
     <h1><%= rollLabel(roll.rel_path) || roll.camera_name %></h1>
     <div class="roll-meta-row">
-      <% if (roll.year) { %><span class="meta-badge"><%= roll.year %></span><% } %>
+      <span class="meta-badge" id="date-display">
+        <% const dateDisplay = formatDateSort(roll.date_sort); %>
+        <% if (dateDisplay) { %><%= dateDisplay %><% } else if (roll.year) { %><%= roll.year %><% } else { %><em>No date set</em><% } %>
+      </span>
       <span class="meta-badge film-stock-badge" id="film-stock-display">
         <% if (roll.film_stock) { %><%= roll.film_stock %><% } else { %><em>No film stock set</em><% } %>
       </span>
@@ -42,6 +45,10 @@ const breadcrumbs = [
 </div>
 
 <div class="roll-edit-panel" id="roll-edit" style="display:none">
+  <div class="edit-row">
+    <label>Date</label>
+    <input type="date" id="date-input" value="<%= /^\d{4}-\d{2}-\d{2}$/.test(roll.date_sort || '') && !roll.date_sort.endsWith('-00') ? roll.date_sort : '' %>">
+  </div>
   <div class="edit-row">
     <label>Film stock</label>
     <input type="text" id="film-input" value="<%= roll.film_stock || '' %>" placeholder="e.g. Kodak Gold 200">
@@ -203,13 +210,23 @@ function toggleEdit() {
   p.style.display = p.style.display === 'none' ? 'block' : 'none';
 }
 
+const MONTH_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function formatDateSort(dateStr) {
+  if (!dateStr) return '';
+  const [y, mo, d] = dateStr.split('-');
+  return `${MONTH_ABBR[parseInt(mo, 10) - 1]} ${parseInt(d, 10)}, ${y}`;
+}
+
 async function saveRoll() {
+  const date  = document.getElementById('date-input').value;
   const film  = document.getElementById('film-input').value.trim();
   const notes = document.getElementById('notes-input').value.trim();
   await Promise.all([
+    fetch(`/api/roll/${ROLL_ID}/date`,       { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({date}) }),
     fetch(`/api/roll/${ROLL_ID}/film_stock`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({film_stock: film}) }),
     fetch(`/api/roll/${ROLL_ID}/notes`,      { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({notes}) }),
   ]);
+  document.getElementById('date-display').textContent = date ? formatDateSort(date) : 'No date set';
   document.getElementById('film-stock-display').textContent = film || 'No film stock set';
   document.getElementById('status').textContent = 'Saved ✓';
   setTimeout(() => document.getElementById('status').textContent = '', 2000);

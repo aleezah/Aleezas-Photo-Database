@@ -3,6 +3,7 @@
 <div class="page-header">
   <h1>Digital Photos</h1>
   <p class="subtitle"><%= rolls.length %> albums</p>
+  <button class="btn-select-mode" onclick="cleanupMissing()">Clean Up Missing</button>
   <button class="btn-select-mode" id="select-toggle" onclick="toggleSelectMode()">Select</button>
 </div>
 
@@ -42,6 +43,16 @@
     </div>
   </div>
   <% } %>
+
+  <div class="filter-group">
+    <span class="filter-label">Sort</span>
+    <select id="sort-select" class="sort-select" onchange="applySort(this.value)">
+      <option value="date_desc" <%= sort === 'date_desc' ? 'selected' : '' %>>Date (newest first)</option>
+      <option value="date_asc"  <%= sort === 'date_asc'  ? 'selected' : '' %>>Date (oldest first)</option>
+      <option value="name_asc"  <%= sort === 'name_asc'  ? 'selected' : '' %>>Name (A-Z)</option>
+      <option value="name_desc" <%= sort === 'name_desc' ? 'selected' : '' %>>Name (Z-A)</option>
+    </select>
+  </div>
 </div>
 
 <%
@@ -84,6 +95,27 @@ const visible = rolls.filter(r =>
 </div>
 
 <script>
+function applySort(value) {
+  const url = new URL(location.href);
+  url.searchParams.set('sort', value);
+  location.href = url.toString();
+}
+
+async function cleanupMissing(force) {
+  if (!force && !confirm('Scan for rolls/photos whose files no longer exist on disk (renamed or moved folders) and remove those leftover entries?\n\nThis only removes database rows — nothing on disk is touched, and it won\'t recover any notes/film stock/tags on the removed rolls.')) return;
+  const r = await fetch('/api/cleanup-missing', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ force: !!force }),
+  });
+  const d = await r.json();
+  if (d.aborted) {
+    if (confirm(d.reason + '\n\nRun anyway?')) await cleanupMissing(true);
+    return;
+  }
+  alert(`Removed ${d.removedPhotos} missing photo(s), ${d.removedRolls} empty/missing roll(s), ${d.removedCameras} empty camera(s).`);
+  if (d.removedPhotos || d.removedRolls || d.removedCameras) location.reload();
+}
+
 let selectMode = false;
 const selected = new Set();
 

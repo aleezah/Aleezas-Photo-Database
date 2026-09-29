@@ -39,6 +39,12 @@
         <option value="<%= t.name %>" <%= tag === t.name ? 'selected' : '' %>><%= t.name %></option>
         <% } %>
       </select>
+      <select name="sort" onchange="this.form.submit()">
+        <option value="date_desc" <%= sort === 'date_desc' ? 'selected' : '' %>>Date (newest first)</option>
+        <option value="date_asc"  <%= sort === 'date_asc'  ? 'selected' : '' %>>Date (oldest first)</option>
+        <option value="name_asc"  <%= sort === 'name_asc'  ? 'selected' : '' %>>Name (A-Z)</option>
+        <option value="name_desc" <%= sort === 'name_desc' ? 'selected' : '' %>>Name (Z-A)</option>
+      </select>
       <label class="fav-check">
         <input type="checkbox" name="favs" value="1" <%= favs ? 'checked' : '' %>> Favorites only
       </label>
@@ -50,7 +56,7 @@
   <% if (photos.length) { %>
   <%
     const totalPages = Math.ceil(totalCount / pageSize);
-    const qs = new URLSearchParams({ q, camera, film, year, tag, favs: favs||'' });
+    const qs = new URLSearchParams({ q, camera, film, year, tag, sort, favs: favs||'' });
     qs.delete('page');
     const baseQs = qs.toString();
   %>

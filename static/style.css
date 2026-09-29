@@ -614,6 +614,17 @@ a.stat-card:hover { border-color: var(--text); }
   transition: background 0.15s;
 }
 
+.sort-select {
+  padding: 7px 10px;
+  font-size: 0.85rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  color: var(--text);
+  font-family: inherit;
+}
+.sort-select:focus { outline: none; border-color: var(--gold); }
+
 .year-btn:hover,
 .year-btn.active {
   background: var(--text);

@@ -8,6 +8,14 @@ const fs = require('fs');
 const { exec, execFile, spawn } = require('child_process');
 const { ZipArchive } = require('archiver');
 const ffmpegPath = require('ffmpeg-static');
+const { parseDateSort } = require('./dateUtils');
+const { pruneMissing } = require('./pruneMissing');
+
+function leafOf(relPath) {
+  if (!relPath || relPath === '.') return '';
+  const parts = relPath.split(/[\\/]/);
+  return parts[parts.length - 1] || '';
+}
 
 const compressProgress = new Map();
 
@@ -91,6 +99,26 @@ function webCachePath(id) {
   try { conn.exec('ALTER TABLE rolls ADD COLUMN hidden INTEGER DEFAULT 0'); } catch {}
   try { conn.exec('ALTER TABLE rolls ADD COLUMN share_token TEXT'); } catch {}
   try { conn.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_rolls_share_token ON rolls(share_token)'); } catch {}
+  try { conn.exec('ALTER TABLE rolls ADD COLUMN date_sort TEXT'); } catch {}
+  try { conn.exec('ALTER TABLE rolls ADD COLUMN date_manual INTEGER DEFAULT 0'); } catch {}
+  {
+    // Re-derive the sortable date ("YYYY-MM-DD") for every roll whose date wasn't
+    // manually set, from its date_label or (failing that) its folder's own name —
+    // e.g. "Aug 12", "april 16th", or "Aleenas 25 Bday (2024-07-02)". Runs on every
+    // startup (not just once) so parser improvements immediately apply to existing
+    // rolls too, without ever touching a roll the user has manually dated.
+    const rows = conn.prepare("SELECT id, year, date_label, rel_path FROM rolls WHERE date_manual=0 OR date_manual IS NULL").all();
+    if (rows.length) {
+      const updDateSort = conn.prepare('UPDATE rolls SET date_sort=? WHERE id=?');
+      const backfill = conn.transaction(items => {
+        for (const r of items) {
+          const ds = parseDateSort(r.year, r.date_label || leafOf(r.rel_path));
+          updDateSort.run(ds, r.id);
+        }
+      });
+      backfill(rows);
+    }
+  }
   try { conn.exec('ALTER TABLE persons ADD COLUMN hidden INTEGER DEFAULT 0'); } catch {}
   try { conn.exec('ALTER TABLE photos ADD COLUMN immich_id TEXT'); } catch {}
   try { conn.exec('CREATE INDEX IF NOT EXISTS idx_photos_immich_id ON photos(immich_id)'); } catch {}
@@ -143,6 +171,28 @@ app.locals.rollLabel = rel => rel === '.' ? '' : rel.replace(/\\/g, ' › ');
 app.locals.rollLeaf = rel => {
   const parts = (rel || '').split(/[/\\]/);
   return parts[parts.length - 1] || rel;
+};
+// Sorts roll rows (each needs .rel_path and .date_sort) for the "Sort by" control
+// shared between the /rolls grid and the /search photo list. Rolls/photos with no
+// known date always sink to the bottom, regardless of direction.
+function sortRolls(rolls, sort) {
+  const nameOf = r => (r.rel_path === '.' ? '' : r.rel_path.replace(/\\/g, ' › ')).toLowerCase();
+  const sorted = [...rolls];
+  if (sort === 'name_asc')       sorted.sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
+  else if (sort === 'name_desc') sorted.sort((a, b) => nameOf(b).localeCompare(nameOf(a)));
+  else if (sort === 'date_asc')  sorted.sort((a, b) => (a.date_sort || '9999-99-99').localeCompare(b.date_sort || '9999-99-99'));
+  else                           sorted.sort((a, b) => (b.date_sort || '').localeCompare(a.date_sort || ''));
+  return sorted;
+}
+
+const MONTH_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+app.locals.formatDateSort = ds => {
+  const m = (ds || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const [, y, mo, d] = m;
+  if (mo === '00') return y;
+  if (d === '00') return `${MONTH_ABBR[parseInt(mo, 10) - 1]} ${y}`;
+  return `${MONTH_ABBR[parseInt(mo, 10) - 1]} ${parseInt(d, 10)}, ${y}`;
 };
 
 // ── db / file helpers ─────────────────────────────────────────────────────────
@@ -421,7 +471,7 @@ app.get('/', (req, res) => {
              (SELECT p2.id FROM photos p2 WHERE p2.roll_id=r.id AND p2.hidden=0 LIMIT 1)) as preview_id
     FROM rolls r JOIN cameras c ON r.camera_id=c.id JOIN photos p ON p.roll_id=r.id
     WHERE c.name LIKE '35mm prints / %'
-    GROUP BY r.id ORDER BY r.year DESC, r.date_label DESC LIMIT 8
+    GROUP BY r.id ORDER BY r.date_sort DESC LIMIT 8
   `).all();
 
   const recentDigital = conn.prepare(`
@@ -432,7 +482,7 @@ app.get('/', (req, res) => {
              (SELECT p2.id FROM photos p2 WHERE p2.roll_id=r.id AND p2.hidden=0 LIMIT 1)) as preview_id
     FROM rolls r JOIN cameras c ON r.camera_id=c.id JOIN photos p ON p.roll_id=r.id
     WHERE c.name LIKE 'Digital / %'
-    GROUP BY r.id ORDER BY r.year DESC, r.date_label DESC LIMIT 8
+    GROUP BY r.id ORDER BY r.date_sort DESC LIMIT 8
   `).all();
 
   conn.close();
@@ -463,9 +513,10 @@ app.get('/rolls', (req, res) => {
   const filterYear   = req.query.year   || '';
   const filterCamera = req.query.camera || '';
   const tab          = req.query.tab    || 'all';
+  const sort         = req.query.sort   || 'date_desc';
 
-  const rolls = conn.prepare(`
-    SELECT r.id, r.rel_path, r.year, r.date_label, r.film_stock, r.notes,
+  let rolls = conn.prepare(`
+    SELECT r.id, r.rel_path, r.year, r.date_label, r.date_sort, r.film_stock, r.notes,
            c.id as camera_id, c.name as camera_name,
            COUNT(p.id) as photo_count,
            COALESCE(r.cover_photo_id,
@@ -475,8 +526,8 @@ app.get('/rolls', (req, res) => {
     LEFT JOIN photos p ON p.roll_id=r.id
     WHERE c.name LIKE '35mm prints / %' AND (r.hidden=0 OR ? = 1)
     GROUP BY r.id
-    ORDER BY r.year DESC, r.date_label DESC, c.name
   `).all(showHidden ? 1 : 0);
+  rolls = sortRolls(rolls, sort);
 
   const years   = [...new Set(rolls.map(r => r.year).filter(Boolean))].sort((a, b) => b - a);
   const cameras = [...new Map(rolls.map(r => [r.camera_id, r.camera_name])).entries()]
@@ -489,7 +540,7 @@ app.get('/rolls', (req, res) => {
   ).all().map(r => r.film_stock);
 
   conn.close();
-  res.render('rolls', { page: 'rolls', rolls, years, cameras, filterYear, filterCamera, tab, filmStocks });
+  res.render('rolls', { page: 'rolls', rolls, years, cameras, filterYear, filterCamera, tab, sort, filmStocks });
 });
 
 app.get('/digital', (req, res) => {
@@ -497,9 +548,10 @@ app.get('/digital', (req, res) => {
   const showHidden   = res.locals.showHidden;
   const filterYear   = req.query.year   || '';
   const filterCamera = req.query.camera || '';
+  const sort         = req.query.sort   || 'date_desc';
 
-  const rolls = conn.prepare(`
-    SELECT r.id, r.rel_path, r.year, r.date_label, r.film_stock, r.notes,
+  let rolls = conn.prepare(`
+    SELECT r.id, r.rel_path, r.year, r.date_label, r.date_sort, r.film_stock, r.notes,
            c.id as camera_id, c.name as camera_name,
            COUNT(p.id) as photo_count,
            COALESCE(r.cover_photo_id,
@@ -509,8 +561,8 @@ app.get('/digital', (req, res) => {
     LEFT JOIN photos p ON p.roll_id=r.id
     WHERE c.name LIKE 'Digital / %' AND (r.hidden=0 OR ? = 1)
     GROUP BY r.id
-    ORDER BY r.year DESC, r.date_label DESC, c.name
   `).all(showHidden ? 1 : 0);
+  rolls = sortRolls(rolls, sort);
 
   const years   = [...new Set(rolls.map(r => r.year).filter(Boolean))].sort((a, b) => b - a);
   const cameras = [...new Map(rolls.map(r => [r.camera_id, r.camera_name])).entries()]
@@ -518,7 +570,7 @@ app.get('/digital', (req, res) => {
                     .sort((a, b) => a.name.localeCompare(b.name));
 
   conn.close();
-  res.render('digital', { page: 'digital', rolls, years, cameras, filterYear, filterCamera });
+  res.render('digital', { page: 'digital', rolls, years, cameras, filterYear, filterCamera, sort });
 });
 
 app.get('/videos', (req, res) => {
@@ -538,7 +590,7 @@ app.get('/videos', (req, res) => {
     LEFT JOIN photos p ON p.roll_id=r.id
     WHERE c.name LIKE 'Video / %' AND (r.hidden=0 OR ? = 1)
     GROUP BY r.id
-    ORDER BY r.year DESC, r.date_label DESC, c.name
+    ORDER BY r.date_sort DESC, c.name
   `).all(showHidden ? 1 : 0);
 
   const years   = [...new Set(rolls.map(r => r.year).filter(Boolean))].sort((a, b) => b - a);
@@ -563,7 +615,7 @@ app.get('/camera/:id', (req, res) => {
              (SELECT p2.id FROM photos p2 WHERE p2.roll_id=r.id AND p2.hidden=0 LIMIT 1)) as preview_id
     FROM rolls r LEFT JOIN photos p ON p.roll_id=r.id
     WHERE r.camera_id=? AND (r.hidden=0 OR ? = 1)
-    GROUP BY r.id ORDER BY r.year DESC, r.date_label
+    GROUP BY r.id ORDER BY r.date_sort DESC
   `).all(req.params.id, showHidden ? 1 : 0);
 
   const filterYear = req.query.year || '';
@@ -687,6 +739,7 @@ app.get('/share/:token/photo/:photoId', (req, res) => {
 });
 
 app.get('/share/:token', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
   const conn = db();
   const roll = conn.prepare(`
     SELECT r.*, c.name as camera_name, c.id as camera_id
@@ -698,10 +751,10 @@ app.get('/share/:token', (req, res) => {
 
   const photos = conn.prepare(
     'SELECT * FROM photos WHERE roll_id=? AND hidden=0 ORDER BY filename'
-  ).all(roll.id).map(p => {
-    let file_size = 0;
-    try { file_size = fs.statSync(p.file_path).size; } catch {}
-    return { ...p, file_size };
+  ).all(roll.id).flatMap(p => {
+    let stat;
+    try { stat = fs.statSync(p.file_path); } catch { return []; }
+    return [{ ...p, file_size: stat.size }];
   });
 
   conn.close();
@@ -753,8 +806,16 @@ app.get('/share/:token/display/:photoId', async (req, res) => {
     return streamMedia(req, res, row.file_path, mimeFor(row.file_path));
   }
 
+  if (!fs.existsSync(row.file_path)) return res.status(404).end();
+
   const displayPath = path.join(THUMBS_DIR, 'display', `${row.id}.jpg`);
   fs.mkdirSync(path.dirname(displayPath), { recursive: true });
+
+  // Delete corrupt/empty cache file so it gets regenerated
+  try {
+    if (fs.existsSync(displayPath) && fs.statSync(displayPath).size === 0) fs.unlinkSync(displayPath);
+  } catch {}
+
   if (!fs.existsSync(displayPath)) {
     try {
       await sharp(row.file_path)
@@ -763,6 +824,7 @@ app.get('/share/:token/display/:photoId', async (req, res) => {
         .jpeg({ quality: 88 })
         .toFile(displayPath);
     } catch {
+      // Sharp failed (unsupported format etc.) — serve original directly
       return streamFile(res, row.file_path, mimeFor(row.file_path));
     }
   }
@@ -870,8 +932,15 @@ app.get('/share/:token/download', (req, res) => {
   archive.finalize();
 });
 
+const SEARCH_SORTS = {
+  date_desc: 'CASE WHEN r.date_sort IS NULL THEN 1 ELSE 0 END, r.date_sort DESC, p.filename',
+  date_asc:  'CASE WHEN r.date_sort IS NULL THEN 1 ELSE 0 END, r.date_sort ASC, p.filename',
+  name_asc:  'p.filename ASC',
+  name_desc: 'p.filename DESC',
+};
+
 app.get('/search', (req, res) => {
-  const { q = '', camera = '', film = '', year = '', tag = '', favs = '', page: pageStr = '1' } = req.query;
+  const { q = '', camera = '', film = '', year = '', tag = '', favs = '', sort = 'date_desc', page: pageStr = '1' } = req.query;
   const PAGE_SIZE = 48;
   const page = Math.max(1, parseInt(pageStr) || 1);
   const offset = (page - 1) * PAGE_SIZE;
@@ -893,11 +962,12 @@ app.get('/search', (req, res) => {
   if (favs)   { whereSql += ' AND p.favorite=1'; }
 
   const totalCount = conn.prepare(`SELECT COUNT(DISTINCT p.id) as n ${whereSql}`).get(...params).n;
+  const orderBy = SEARCH_SORTS[sort] || SEARCH_SORTS.date_desc;
   const sql = `SELECT p.id, p.filename, p.notes, p.favorite, p.hidden,
     r.id as roll_id, r.rel_path, r.date_label, r.film_stock, r.year,
     c.id as camera_id, c.name as camera_name,
     GROUP_CONCAT(t.name, ',') as tag_names
-    ${whereSql} GROUP BY p.id ORDER BY r.year DESC, r.date_label, p.filename
+    ${whereSql} GROUP BY p.id ORDER BY ${orderBy}
     LIMIT ${PAGE_SIZE} OFFSET ${offset}`;
 
   const photos = conn.prepare(sql).all(...params);
@@ -907,7 +977,7 @@ app.get('/search', (req, res) => {
   const allStocks  = conn.prepare('SELECT DISTINCT film_stock FROM rolls WHERE film_stock IS NOT NULL ORDER BY film_stock').all();
   conn.close();
 
-  res.render('search', { page: 'search', photos, allCameras, allTags, allYears, allStocks, q, camera, film, year, tag, favs, showHidden, totalCount, currentPage: page, pageSize: PAGE_SIZE });
+  res.render('search', { page: 'search', photos, allCameras, allTags, allYears, allStocks, q, camera, film, year, tag, favs, sort, showHidden, totalCount, currentPage: page, pageSize: PAGE_SIZE });
 });
 
 // ── API ───────────────────────────────────────────────────────────────────────
@@ -1112,7 +1182,7 @@ app.get('/shares', (req, res) => {
     LEFT JOIN photos p ON p.roll_id = r.id AND p.hidden = 0
     WHERE r.share_token IS NOT NULL
     GROUP BY r.id
-    ORDER BY r.year DESC, r.date_label DESC
+    ORDER BY r.date_sort DESC
   `).all();
   conn.close();
   const siteUrl = process.env.SITE_URL || `${req.protocol}://${req.get('host')}`;
@@ -1161,6 +1231,29 @@ app.post('/api/roll/:id/film_stock', (req, res) => {
   conn.prepare('UPDATE rolls SET film_stock=? WHERE id=?').run(req.body.film_stock || '', req.params.id);
   conn.close();
   res.json({ ok: true });
+});
+
+app.post('/api/roll/:id/date', (req, res) => {
+  const date = (req.body.date || '').trim();
+  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'invalid date' });
+  const conn = db();
+  if (date) {
+    // Marked manual so it's never overwritten by the auto date-parsing that re-runs on startup.
+    conn.prepare('UPDATE rolls SET date_sort=?, year=?, date_manual=1 WHERE id=?').run(date, date.slice(0, 4), req.params.id);
+  } else {
+    const roll = conn.prepare('SELECT year, date_label, rel_path FROM rolls WHERE id=?').get(req.params.id);
+    const ds = parseDateSort(roll.year, roll.date_label || leafOf(roll.rel_path));
+    conn.prepare('UPDATE rolls SET date_sort=?, date_manual=0 WHERE id=?').run(ds, req.params.id);
+  }
+  conn.close();
+  res.json({ ok: true });
+});
+
+app.post('/api/cleanup-missing', (req, res) => {
+  const conn = db();
+  const result = pruneMissing(conn, BASE_DIR, { force: !!req.body.force });
+  conn.close();
+  res.json(result);
 });
 
 app.post('/api/film-stocks/merge', (req, res) => {
@@ -1307,7 +1400,7 @@ app.get('/api/search/rolls', (req, res) => {
     LEFT JOIN photos p ON p.roll_id=r.id ${hf}
     ${where}
     GROUP BY r.id
-    ORDER BY r.year DESC, r.date_label DESC
+    ORDER BY r.date_sort DESC
     LIMIT 60
   `).all(...params);
 
